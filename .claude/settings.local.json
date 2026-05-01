@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"https://files.rcsb.org/download/3V03.pdb\" -o \"c:/Users/Zach/Documents/ProteinViz/3V03.pdb\")",
+      "Bash(/c/Users/Zach/anaconda3/python.exe -c ' *)",
+      "WebFetch(domain:doi.org)",
+      "Bash(where python *)"
+    ]
+  }
+}

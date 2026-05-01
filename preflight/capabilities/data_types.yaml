@@ -1,0 +1,131 @@
+# Data type registry — EDAM Data analog.
+# Things that flow between tools as inputs and outputs.
+# `parent` allows grouping (e.g. all per-residue arrays inherit from per_residue_array).
+
+# ---- Sequence-level inputs ----
+
+- id: data_aa_sequence
+  label: Amino acid sequence
+  definition: Single-letter amino acid sequence string.
+  parent: null
+
+- id: data_fasta_file
+  label: FASTA file
+  definition: One or more sequences in FASTA format on disk.
+  parent: null
+
+- id: data_a3m_msa
+  label: A3M multiple sequence alignment
+  definition: Aligned sequence file in ColabFold-style A3M format, optionally paired across chains.
+  parent: null
+
+# ---- Structural inputs ----
+
+- id: data_pdb_file
+  label: PDB structure file
+  definition: 3D atomic coordinates in PDB format.
+  parent: null
+
+- id: data_pdb_complex
+  label: PDB structure file (complex)
+  definition: Multi-chain PDB representing a peptide-protein or protein-protein complex.
+  parent: data_pdb_file
+
+# ---- Per-residue arrays (prediction confidence and properties) ----
+
+- id: data_plddt_per_residue
+  label: Per-residue pLDDT
+  definition: Per-residue pLDDT confidence scores from an AlphaFold-class predictor, range 0-100.
+  parent: null
+
+- id: data_pae_matrix
+  label: Predicted aligned error matrix
+  definition: NxN matrix of pairwise predicted aligned error values in Angstroms.
+  parent: null
+
+- id: data_disorder_per_residue
+  label: Per-residue disorder score
+  definition: Per-residue disorder propensity, range 0-1, from any disorder predictor.
+  parent: null
+
+- id: data_anchor_per_residue
+  label: Per-residue ANCHOR2 binding score
+  definition: Per-residue propensity for disorder-mediated binding (MoRF-like sites).
+  parent: null
+
+- id: data_secondary_structure
+  label: Secondary structure assignment
+  definition: Per-residue secondary structure code (H/E/C or DSSP 8-state).
+  parent: null
+
+- id: data_sasa_per_residue
+  label: Per-residue SASA
+  definition: Solvent-accessible surface area per residue in square Angstroms.
+  parent: null
+
+# ---- Scalar / summary metrics ----
+
+- id: data_iptm_score
+  label: ipTM score
+  definition: Interface predicted TM-score for a multimer prediction, range 0-1.
+  parent: null
+
+- id: data_actifptm_score
+  label: actifpTM score
+  definition: Interface-focused actifpTM score, range 0-1; preferred over ipTM for peptide complexes.
+  parent: null
+
+- id: data_ptm_score
+  label: pTM score
+  definition: Predicted TM-score of the full prediction, range 0-1.
+  parent: null
+
+- id: data_disorder_summary
+  label: Disorder summary statistics
+  definition: Aggregate disorder content (% disordered, IDR segment count, longest IDR).
+  parent: null
+
+- id: data_kappa
+  label: Charge patterning kappa
+  definition: Das-Pappu kappa parameter quantifying charge segregation in an IDR.
+  parent: null
+
+- id: data_ncpr
+  label: Net charge per residue
+  definition: Mean net charge per residue across a sequence or window.
+  parent: null
+
+- id: data_fcr
+  label: Fraction of charged residues
+  definition: Fraction of residues that are charged (D, E, K, R) in a sequence or window.
+  parent: null
+
+- id: data_sasa_total
+  label: Total SASA
+  definition: Total solvent-accessible surface area of a structure or chain in square Angstroms.
+  parent: null
+
+- id: data_buried_surface_area
+  label: Buried surface area
+  definition: Surface area buried on complex formation, in square Angstroms.
+  parent: null
+
+- id: data_interface_residues
+  label: Interface residue list
+  definition: List of residues within a configurable distance cutoff of a binding partner.
+  parent: null
+
+- id: data_ddg_value
+  label: ddG value
+  definition: Predicted change in folding free energy on mutation, in kcal/mol.
+  parent: null
+
+- id: data_tm_score
+  label: TM-score
+  definition: Template Modeling score between two structures, range 0-1.
+  parent: null
+
+- id: data_rmsd_ca
+  label: Calpha RMSD
+  definition: Root-mean-square deviation between Calpha atoms of aligned structures, in Angstroms.
+  parent: null

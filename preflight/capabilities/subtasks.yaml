@@ -1,0 +1,65 @@
+# Subtask registry — EDAM Topic analog.
+# High-level categories of work the pipeline performs.
+# Hierarchical via `parent`. Polyhierarchy is allowed (parent may be a list).
+
+- id: subtask_folding
+  label: Structure prediction
+  definition: Single-chain or multi-domain 3D structure generation from sequence.
+  parent: null
+
+- id: subtask_binding
+  label: Peptide-protein binding
+  definition: Prediction of complex structure and interface confidence between a peptide and a receptor protein.
+  parent: null
+
+- id: subtask_ppi
+  label: Protein-protein interaction
+  definition: Prediction of complex structure and interface confidence between two or more full-length protein partners.
+  parent: null
+
+- id: subtask_structural_analysis
+  label: Structural analysis
+  definition: Characterization of an existing or predicted structure — secondary structure, domain boundaries, surface accessibility, geometric features.
+  parent: null
+
+- id: subtask_mutation
+  label: Mutational effect
+  definition: Prediction of structural or stability impact of point mutations or small variant sets.
+  parent: null
+
+- id: subtask_msa_generation
+  label: Multiple sequence alignment generation
+  definition: Production of an MSA (typically A3M format) for downstream evolutionary-context-aware prediction.
+  parent: null
+
+# Disorder characterization is a parent topic with five children, mirroring the
+# accordion structure of the task ontology document.
+- id: subtask_disorder
+  label: Disorder characterization
+  definition: Identification, quantification, and contextualization of intrinsic disorder.
+  parent: null
+
+- id: subtask_disorder_core
+  label: Disorder prediction (core)
+  definition: Per-residue and per-region binary or continuous disorder classification from sequence alone.
+  parent: subtask_disorder
+
+- id: subtask_disorder_binding
+  label: Binding within disorder
+  definition: Localization of binding-competent subsegments within an IDR — MoRFs, SLiMs, LIPs, DPBRs.
+  parent: subtask_disorder
+
+- id: subtask_disorder_conditional
+  label: Conditional disorder and binding modes
+  definition: Disorder-to-order vs. disorder-to-disorder vs. context-dependent binding mode prediction.
+  parent: subtask_disorder
+
+- id: subtask_disorder_ensemble
+  label: Ensemble and biophysical properties
+  definition: Conformational ensemble characterization — compactness, charge patterning, transient structure.
+  parent: subtask_disorder
+
+- id: subtask_disorder_llps
+  label: Phase separation propensity
+  definition: Prediction of liquid-liquid phase separation and condensate involvement.
+  parent: subtask_disorder

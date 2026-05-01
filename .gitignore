@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Env
+.env
+.env.local
+
+# Project artifacts
+jobs/*
+!jobs/.gitkeep
+outputs/*
+!outputs/.gitkeep
+literature/*
+!literature/.gitkeep
+
+# Prediction outputs
+*.pdb
+*.cif
+*.a3m
+*.pkl
+
+# Editor
+.vscode/
+.idea/
+.DS_Store

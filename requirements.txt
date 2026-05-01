@@ -1,0 +1,23 @@
+# Core
+numpy>=1.26
+pandas>=2.1
+biopython>=1.83
+
+# Structure analysis
+freesasa>=2.2
+
+# Visualization
+py3Dmol>=2.0
+matplotlib>=3.8
+
+# HTTP / APIs (IUPred3, UniProt, ESM Atlas)
+requests>=2.31
+httpx>=0.27
+
+# CLI / config
+python-dotenv>=1.0
+rich>=13.7
+
+# Dev
+pytest>=8.0
+ruff>=0.4
