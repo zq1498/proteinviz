@@ -215,6 +215,11 @@ in `rosetta.py`. See module docstrings for the full pattern.
   `all_subtasks`, `tools_for_subtask` (walks parent chain), `tools_providing`, `tools_requiring`.
 - `resolve_wrapper(tool_id)` → callable: imports dotted path from registry; cached per `tool_id`.
   Raises `WrapperNotImplementedError` (null wrapper) or `WrapperResolutionError` (bad path).
+- `select_tool(subtask_id, *, require_wrapper=True, max_tier=2)` → tool entry: **(B4)** explicit,
+  tier-aware backend choice replacing positional `tools_for_subtask(...)[0]`. Skips deprecated /
+  above-tier / null-wrapper tools; ranks by `(tier, -priority, id)`. Optional `priority:` in
+  `tools.yaml` marks the preferred backend (`tool_colabfold: 10`). `_unimplemented_tool_notes`
+  surfaces declared-but-not-callable tools for the active subtask as roadmap decision points.
 - `validate_inputs(spec)` → warnings list: length flags, cysteine-pair flags per sequence.
 - `suggest_analyses(spec)`: panel suggestion when N > 1 peptides; disorder check suggestion for
   long targets; isoform discrimination table for multi-target tasks; cysteine suggestion.
@@ -234,10 +239,11 @@ in `rosetta.py`. See module docstrings for the full pattern.
   `tool_freesasa` → `tools.analyze.analyze_structure`, and four `tool_rosetta_*` entries
   → `tools.rosetta.*` (score_interface, per_residue_energies, alanine_scan, confidence_filter_scan).
 - All entries carry `tier:` (1/2/3). Tier 3 = not yet implemented or web-only-no-API.
-- `tool_anchor2` marked `deprecated: true`; AIUPred (tool_iupred3) covers the same use case locally.
-- `tool_colabfold_search` and `tool_dcc_msa` are marked `deprecated: true`; MSA search now
-  lives inside `predict.sh` (SEARCH_ONLY=1), not as a standalone callable.
+  AIUPred (`tool_iupred3`) covers disorder locally; MSA search lives inside `predict.sh`
+  (SEARCH_ONLY=1) rather than as a standalone tool entry.
 - `tool_predict_panel` is the preferred entry for panel screening tasks.
+- `tool_metapredict` → `tools.metapredict.predict_disorder` and `tool_localcider` →
+  `tools.analyze.analyze_cider` are also wired (non-null wrappers).
 - **Part B / B1 — declarative call contract**: wrapped tools now carry optional `call_kwargs`
   (static defaults), `bindings` (wrapper kwarg → `data_*` id or reserved `_job_dir`/`_msa_cache`),
   and `output_map` (`data_*` id → `"."`/`attr`/`attr[0]` expression on the return value). This makes
@@ -299,7 +305,11 @@ in `rosetta.py`. See module docstrings for the full pattern.
 - **`job_id` convention**: `{target_id}_{YYYYMMDD}_{short_hash}` proposed but not enforced.
 - **Pre-flight session state**: does conversation state persist in a file (resumable sessions)
   or live only in agent context? Not decided.
-- **Registry coverage vs. callable coverage**: All entries now carry a `tier:` field. Decided: `build_roadmap` should surface null-wrapper tools in the roadmap with a tier label and a warning that they are declared but not yet callable — this preserves the capability map for the pre-flight reasoning layer without silently routing to unimplemented steps. Filtering to only callable tools is too conservative; it would hide Tier 1 tools that are easy to wire up.
+- **Registry coverage vs. callable coverage** — *resolved (B4)*. `select_tool` chooses backends from
+  callable (wrapped, ≤ tier 2, non-deprecated) candidates ranked by `(tier, -priority, id)`, while
+  `build_roadmap` surfaces declared-but-not-callable tools for the active subtask as decision-point
+  notes via `_unimplemented_tool_notes`. The capability map stays visible without silently routing to
+  unimplemented steps; filtering the *catalog* itself was rejected as too conservative.
 
 ## Next Priorities (Phase 2)
 

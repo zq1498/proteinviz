@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from preflight import reasoning
 from preflight.reasoning import (
     FeasibilityReport,
     Roadmap,
@@ -14,6 +15,7 @@ from preflight.reasoning import (
     lookup_tool,
     make_step,
     resolve_wrapper,
+    select_tool,
     suggest_analyses,
     tools_for_subtask,
     validate_inputs,
@@ -319,6 +321,63 @@ def test_make_step_no_call_contract_yields_empty_kwargs_and_bindings():
     step = make_step("tool_extract_colabfold")
     assert step.kwargs == {}                             # extract has no call_kwargs
     assert step.input_bindings == {"out_dir": "_job_dir"}
+
+
+# ---------------------------------------------------------------------------
+# select_tool — tier-aware, priority-ranked, explicit selection (B4)
+# ---------------------------------------------------------------------------
+
+def test_select_tool_binding_picks_colabfold():
+    assert select_tool("subtask_binding")["id"] == "tool_colabfold"
+
+
+def test_select_tool_folding_picks_colabfold():
+    assert select_tool("subtask_folding")["id"] == "tool_colabfold"
+
+
+def test_select_tool_skips_tier3_and_unwrapped_in_real_registry():
+    # subtask_disorder_core has iupred3 (t1), metapredict (t1), netsurfp3 (t3, no wrapper)
+    chosen = select_tool("subtask_disorder_core")["id"]
+    assert chosen in {"tool_iupred3", "tool_metapredict"}
+    assert chosen != "tool_netsurfp3"
+
+
+def test_select_tool_respects_priority(monkeypatch):
+    fake = [
+        {"id": "tool_lo", "tier": 1, "wrapper": "x", "priority": 0},
+        {"id": "tool_hi", "tier": 1, "wrapper": "x", "priority": 5},
+    ]
+    monkeypatch.setattr(reasoning, "tools_for_subtask", lambda s, **k: fake)
+    assert select_tool("whatever")["id"] == "tool_hi"
+
+
+def test_select_tool_skips_deprecated_unwrapped_and_high_tier(monkeypatch):
+    fake = [
+        {"id": "tool_dep", "tier": 1, "wrapper": "x", "deprecated": True},
+        {"id": "tool_nowrap", "tier": 1, "wrapper": None},
+        {"id": "tool_high", "tier": 3, "wrapper": "x"},
+        {"id": "tool_ok", "tier": 2, "wrapper": "x"},
+    ]
+    monkeypatch.setattr(reasoning, "tools_for_subtask", lambda s, **k: fake)
+    assert select_tool("x")["id"] == "tool_ok"
+
+
+def test_select_tool_require_wrapper_false_allows_null_wrapper(monkeypatch):
+    fake = [{"id": "tool_nowrap", "tier": 1, "wrapper": None}]
+    monkeypatch.setattr(reasoning, "tools_for_subtask", lambda s, **k: fake)
+    assert select_tool("x", require_wrapper=False)["id"] == "tool_nowrap"
+
+
+def test_select_tool_raises_when_no_candidate(monkeypatch):
+    monkeypatch.setattr(reasoning, "tools_for_subtask", lambda s, **k: [])
+    with pytest.raises(RuntimeError):
+        select_tool("subtask_empty")
+
+
+def test_build_roadmap_surfaces_unimplemented_backend_as_decision_point():
+    spec = TaskSpec(targets=["MKTAY"], peptides=["ACDEF"])
+    rm = build_roadmap(spec, _empty_feasibility())
+    assert any("tool_boltz1" in dp and "not yet callable" in dp for dp in rm.decision_points)
 
 
 # ---------------------------------------------------------------------------

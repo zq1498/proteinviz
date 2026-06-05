@@ -33,7 +33,7 @@ __all__ = [
     "lookup_tool", "lookup_subtask", "lookup_data_type",
     "all_tools", "all_subtasks",
     "tools_for_subtask", "tools_providing", "tools_requiring",
-    "resolve_wrapper", "make_step",
+    "resolve_wrapper", "make_step", "select_tool",
     "estimate_runtime", "validate_inputs", "suggest_analyses", "build_roadmap",
 ]
 
@@ -194,6 +194,50 @@ def tools_requiring(data_type_id: str) -> list[dict]:
     return [t for t in all_tools() if data_type_id in t.get("has_input", [])]
 
 
+def select_tool(subtask_id: str, *, require_wrapper: bool = True, max_tier: int = 2) -> dict:
+    """Pick the preferred callable tool for a subtask, explicitly (not positionally).
+
+    Filters out deprecated tools, tools above `max_tier`, and (when
+    `require_wrapper`) tools with no `wrapper`. Ranks the survivors by
+    `(tier, -priority, id)` — lower tier wins, then higher `priority`, then a
+    stable id tiebreak. This replaces the old `tools_for_subtask(...)[0]`, which
+    silently changed backend if `tools.yaml` was reordered.
+
+    Raises RuntimeError if no tool qualifies.
+    """
+    cands = [
+        t for t in tools_for_subtask(subtask_id)
+        if not t.get("deprecated")
+        and (t.get("wrapper") or not require_wrapper)
+        and t.get("tier", 99) <= max_tier
+    ]
+    if not cands:
+        raise RuntimeError(f"No selectable tool for {subtask_id}")
+    return sorted(cands, key=lambda t: (t.get("tier", 99), -t.get("priority", 0), t["id"]))[0]
+
+
+def _unimplemented_tool_notes(subtask_id: str, *, max_tier: int = 2) -> list[str]:
+    """Decision-point notes for tools registered under a subtask but not yet callable.
+
+    Keeps the capability map visible during pre-flight: a tool that is declared
+    (so the agent knows it exists) but has a null wrapper or is above max_tier is
+    surfaced as a note rather than silently ignored or silently routed to.
+    """
+    notes: list[str] = []
+    for t in tools_for_subtask(subtask_id):
+        if t.get("deprecated"):
+            continue
+        no_wrapper = not t.get("wrapper")
+        too_high = t.get("tier", 99) > max_tier
+        if no_wrapper or too_high:
+            reason = "no wrapper" if no_wrapper else f"tier {t.get('tier')}"
+            notes.append(
+                f"{t['label']} ({t['id']}) is registered for {subtask_id} but not yet "
+                f"callable ({reason}) — not routed to."
+            )
+    return notes
+
+
 def _descendant_subtasks(parent_id: str) -> set[str]:
     """All subtask IDs whose `parent` chain includes parent_id."""
     subtasks = _load_registry()["subtasks"]
@@ -336,6 +380,10 @@ def build_roadmap(spec: TaskSpec, feasibility: FeasibilityReport) -> Roadmap:
         decision_points.append(
             "Run disorder check on targets before interpreting low-pLDDT regions?"
         )
+    # Keep the capability map visible: note tools declared for the active subtask
+    # that aren't yet callable, rather than silently ignoring or routing to them.
+    primary_subtask = "subtask_binding" if spec.peptides else "subtask_folding"
+    decision_points.extend(_unimplemented_tool_notes(primary_subtask))
 
     steps.append("Compute composite scores and rank")
     steps.append("Render markdown report with flagged observations")
@@ -357,10 +405,7 @@ def _binding_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
 
 def _single_pair_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
     """Emit one Job per (target, peptide) pair with a predict + extract plan."""
-    binding_tools = tools_for_subtask("subtask_binding")
-    if not binding_tools:
-        raise RuntimeError("No tools registered for subtask_binding")
-    primary_id = binding_tools[0]["id"]   # tool_colabfold by current registry order
+    primary_id = select_tool("subtask_binding")["id"]   # tier-aware, priority-ranked
 
     n_pairs = len(spec.targets) * len(spec.peptides)
     steps = [
@@ -440,10 +485,7 @@ def _panel_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
 
 def _monomer_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
     """Emit one Job per target with a predict + extract plan (single chain)."""
-    folding_tools = tools_for_subtask("subtask_folding")
-    if not folding_tools:
-        raise RuntimeError("No tools registered for subtask_folding")
-    primary_id = folding_tools[0]["id"]
+    primary_id = select_tool("subtask_folding")["id"]   # tier-aware, priority-ranked
 
     steps = [
         f"Predict {len(spec.targets)} monomer structures via {primary_id}",

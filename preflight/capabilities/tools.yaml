@@ -8,6 +8,7 @@
 - id: tool_colabfold
   label: ColabFold
   tier: 1
+  priority: 10   # preferred prediction backend; wins select_tool over a future tool_boltz1
   definition: AlphaFold2-based structure prediction (monomer and multimer) via SLURM job on DCC.
   subtask:
     - subtask_folding
