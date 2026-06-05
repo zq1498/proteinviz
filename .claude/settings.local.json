@@ -4,7 +4,13 @@
       "Bash(curl -s \"https://files.rcsb.org/download/3V03.pdb\" -o \"c:/Users/Zach/Documents/ProteinViz/3V03.pdb\")",
       "Bash(/c/Users/Zach/anaconda3/python.exe -c ' *)",
       "WebFetch(domain:doi.org)",
-      "Bash(where python *)"
+      "Bash(where python *)",
+      "WebFetch(domain:rest.uniprot.org)",
+      "mcp__claude_ai_PubMed__search_articles",
+      "WebFetch(domain:www.uniprot.org)",
+      "Bash(python -)",
+      "Bash(conda run *)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

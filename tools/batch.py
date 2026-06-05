@@ -7,9 +7,11 @@ mean is decided by the Roadmap (built in preflight.reasoning) and the registry
 (preflight/capabilities/). It owns: the loop, FASTA preparation, working
 directory management, propagating step outputs into job inputs, and logging.
 
-V1 scope: predict + extract chain for the binding/monomer branch. MSA caching
-is deferred to v2 — for testing, run with `fast=True` on the prediction step
-to skip MSA entirely.
+Panel tasks (kind="binding_panel"): before the per-job loop, _run_panel_predictions
+calls predict_panel once per target (blocking — waits for the SLURM array and
+downloads results), then populates data_colabfold_out_dir / data_pdb_complex on
+each job so the extraction step has the correct paths. The per-job loop then runs
+only the extraction + analysis steps.
 """
 
 from __future__ import annotations
@@ -63,6 +65,11 @@ def run_batch(
             started_at=started, finished_at=_now(),
         )
 
+    # Panel pre-processing: submit + wait + download before the per-job loop.
+    panel_jobs = [j for j in jobs if j.metadata.get("kind") == "binding_panel"]
+    if panel_jobs:
+        _run_panel_predictions(spec, jobs, jobs_root)
+
     print(f"[batch] starting run with {len(jobs)} job(s) under {jobs_root}/", flush=True)
     for job in jobs:
         _run_one_job(job, jobs_root, abort_on_failure)
@@ -81,6 +88,90 @@ def run_batch(
         spec=spec, roadmap=roadmap, jobs=jobs,
         started_at=started, finished_at=finished,
     )
+
+
+# ---------------------------------------------------------------------------
+# Panel pre-processing
+# ---------------------------------------------------------------------------
+
+def _run_panel_predictions(
+    spec: Any,
+    jobs: list[Job],
+    jobs_root: Path,
+) -> None:
+    """Call predict_panel once per target, then populate inputs on each panel job.
+
+    Groups binding_panel jobs by target_idx, submits one predict_panel call per
+    target (which blocks until the SLURM array completes and downloads results),
+    then sets data_colabfold_out_dir / data_pdb_complex / data_pdb_file on every
+    job so the extraction step has the correct paths.
+
+    Resume: if jobs_root/panel_{target_id}/done.flag exists, skips submission and
+    reconstructs local_output_dirs from the filesystem.
+
+    Jobs whose peptide produced no DCC output are marked failed before the loop.
+    """
+    from collections import defaultdict
+    from tools.predict import predict_panel, write_fasta
+
+    by_target: dict[int, list[Job]] = defaultdict(list)
+    for job in jobs:
+        if job.metadata.get("kind") == "binding_panel":
+            by_target[job.metadata["target_idx"]].append(job)
+
+    for ti, target_jobs in sorted(by_target.items()):
+        target_id = f"target_{ti}"
+        panel_dir = jobs_root / f"panel_{target_id}"
+        panel_dir.mkdir(parents=True, exist_ok=True)
+        done_flag = panel_dir / "done.flag"
+
+        peptides_ordered = sorted(target_jobs, key=lambda j: j.metadata["peptide_idx"])
+        peptide_list: list[tuple[str, str]] = [
+            (j.metadata["peptide_id"], spec.peptides[j.metadata["peptide_idx"]])
+            for j in peptides_ordered
+        ]
+
+        if done_flag.exists():
+            print(f"[batch] panel_{target_id}: skipped (done.flag present)", flush=True)
+            local_output_dirs: dict[str, Path] = {}
+            for pid, _ in peptide_list:
+                d = panel_dir / pid
+                if d.exists() and any(d.glob("*.pdb")):
+                    local_output_dirs[pid] = d
+        else:
+            target_fasta = panel_dir / f"{target_id}.fasta"
+            write_fasta(spec.targets[ti], target_id, target_fasta)
+            print(
+                f"[batch] panel_{target_id}: submitting {len(peptide_list)} peptide(s)",
+                flush=True,
+            )
+            panel_result = predict_panel(
+                target_fasta=target_fasta,
+                peptides=peptide_list,
+                jobs_root=panel_dir,
+                job_name=target_id,
+            )
+            local_output_dirs = panel_result.local_output_dirs
+            done_flag.touch()
+            print(
+                f"[batch] panel_{target_id}: {len(local_output_dirs)}/{len(peptide_list)} "
+                "peptide(s) downloaded",
+                flush=True,
+            )
+
+        for job in target_jobs:
+            pid = job.metadata["peptide_id"]
+            out_dir = local_output_dirs.get(pid)
+            if out_dir is None:
+                job.status = "failed"
+                job.error = f"predict_panel produced no output for {pid}"
+                print(f"[batch] {job.job_id}: marked failed (no panel output for {pid})", flush=True)
+                continue
+            job.inputs["data_colabfold_out_dir"] = out_dir
+            pdb_paths = sorted(out_dir.glob("*.pdb"))
+            if pdb_paths:
+                job.inputs["data_pdb_complex"] = pdb_paths[0]
+                job.inputs["data_pdb_file"] = pdb_paths[0]
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +206,7 @@ def _run_one_job(job: Job, jobs_root: Path, abort_on_failure: bool) -> None:
             _propagate_outputs(job, result)
         job.status = "done"
         (job.job_dir / "done.flag").touch()
+        _run_post_plan_analysis(job)
     except Exception as e:
         job.status = "failed"
         job.error = f"{type(e).__name__}: {e}"
@@ -188,6 +280,85 @@ def _propagate_outputs(job: Job, result: Any) -> None:
             job.inputs["data_pdb_complex"] = pdb_paths[0]
         if "data_pdb_file" not in job.inputs or job.inputs["data_pdb_file"] is None:
             job.inputs["data_pdb_file"] = pdb_paths[0]
+
+
+# ---------------------------------------------------------------------------
+# Post-plan analysis (non-fatal supplemental step)
+# ---------------------------------------------------------------------------
+
+def _run_post_plan_analysis(job: Job) -> None:
+    """Call analyze_structure and analyze_sequence after a successful plan.
+
+    Results land in job.results["analyze_structure"] and job.results["analyze_sequence"]
+    so build_report_inputs can pull them into ReportInputs without re-running analysis.
+    Failures are logged and swallowed — analysis is supplemental, not load-bearing.
+    """
+    try:
+        from tools.analyze import analyze_sequence, analyze_structure
+        pdb_path = job.inputs.get("data_pdb_complex") or job.inputs.get("data_pdb_file")
+        if pdb_path is not None:
+            job.results["analyze_structure"] = analyze_structure(Path(pdb_path))
+
+        seqs = job.inputs.get("data_aa_sequence")
+        if seqs is not None:
+            if isinstance(seqs, str):
+                job.results["analyze_sequence"] = analyze_sequence(seqs)
+            elif isinstance(seqs, list):
+                job.results["analyze_sequence"] = [analyze_sequence(s) for s in seqs]
+    except Exception as e:
+        _log(job, f"post-plan analysis skipped: {type(e).__name__}: {e}")
+
+
+def build_report_inputs(
+    job: Job,
+    task_description: str,
+    methods: dict[str, Any] | None = None,
+    flags: list[str] | None = None,
+    follow_up: list[str] | None = None,
+    weights: dict[str, float] | None = None,
+) -> "ReportInputs":
+    """Assemble a ReportInputs from a completed Job.
+
+    Pulls ExtractedMetrics from tool_extract_colabfold, StructureFeatures from
+    analyze_structure, and SequenceFeatures from analyze_sequence — all of which
+    are stored in job.results by _run_post_plan_analysis after the plan succeeds.
+    For binding tasks (data_aa_sequence is a list), uses the peptide (index 1) as
+    the primary sequence; for monomer tasks uses index 0.
+    """
+    from tools.report import ReportInputs
+
+    metrics = job.results.get("tool_extract_colabfold") or []
+    if not isinstance(metrics, list):
+        metrics = [metrics]
+
+    structure = job.results.get("analyze_structure")
+
+    sequences = job.results.get("analyze_sequence")
+    sequence = None
+    if isinstance(sequences, list) and sequences:
+        sequence = sequences[1] if len(sequences) > 1 else sequences[0]
+    elif sequences is not None:
+        sequence = sequences
+
+    output_paths: dict[str, Path] = {}
+    pdb = job.inputs.get("data_pdb_complex") or job.inputs.get("data_pdb_file")
+    if pdb is not None:
+        output_paths["rank-1 PDB"] = Path(pdb)
+    if job.job_dir is not None:
+        output_paths["job directory"] = job.job_dir
+
+    return ReportInputs(
+        job_id=job.job_id,
+        task_description=task_description,
+        metrics=metrics,
+        methods=methods or {},
+        flags=flags or [],
+        follow_up=follow_up or [],
+        output_paths=output_paths,
+        weights=weights,
+        structure=structure,
+        sequence=sequence,
+    )
 
 
 # ---------------------------------------------------------------------------

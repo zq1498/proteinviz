@@ -126,3 +126,41 @@ def test_render_report_writes_methods_when_provided():
     report = render_report(inputs)
     assert "**backend:**" in report
     assert "colabfold" in report
+
+
+def test_render_report_table_includes_per_chain_plddt_column():
+    m = _metric("rank_001", mean_plddt=74.0, actifptm=0.97, iptm=0.55)
+    m.per_chain_plddt = {"A": 76.0, "B": 75.5, "C": 25.0}
+    inputs = ReportInputs(job_id="j", task_description="t", metrics=[m])
+    report = render_report(inputs)
+    assert "Per-chain pLDDT" in report
+    assert "A:76.0" in report
+    assert "C:25.0" in report
+
+
+def test_render_report_flags_actifptm_for_three_chain_complex():
+    m = _metric("rank_001", mean_plddt=74.0, actifptm=0.97, iptm=0.55)
+    m.per_chain_plddt = {"A": 76.0, "B": 75.5, "C": 25.0}
+    inputs = ReportInputs(job_id="j", task_description="t", metrics=[m])
+    report = render_report(inputs)
+    flags_section = report.split("## 4. Flagged Observations")[1]
+    assert "actifpTM unreliable" in flags_section
+    assert "3-chain" in flags_section
+    assert "chain C" in flags_section
+
+
+def test_render_report_no_actifptm_flag_for_two_chain_complex():
+    m = _metric("rank_001", mean_plddt=80.0, actifptm=0.90, iptm=0.75)
+    m.per_chain_plddt = {"A": 80.0, "B": 40.0}
+    inputs = ReportInputs(job_id="j", task_description="t", metrics=[m])
+    report = render_report(inputs)
+    flags_section = report.split("## 4. Flagged Observations")[1]
+    assert "actifpTM unreliable" not in flags_section
+
+
+def test_executive_summary_notes_actifptm_exclusion_for_three_chain():
+    m = _metric("rank_001", mean_plddt=74.0, actifptm=0.97, iptm=0.55)
+    m.per_chain_plddt = {"A": 76.0, "B": 75.5, "C": 25.0}
+    summary = executive_summary([m], flags=[])
+    assert "excluded from composite" in summary
+    assert "3-chain" in summary

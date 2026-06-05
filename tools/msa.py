@@ -1,29 +1,28 @@
-"""DCC-based MSA search via SLURM.
+"""DCC connectivity helpers and MSA utilities for ColabFold.
 
-Workflow:
-  1. SCP local FASTA → DCC
-  2. Render and submit cluster/msa_search.sh via sbatch over SSH
-  3. Poll squeue until job completes or fails
-  4. SCP the .a3m back to local out_dir
-  5. Caller hands the .a3m to predict.py via --msa-path
+SSH/SCP helpers (_ssh, _scp_to, _scp_from, _dcc_host, _dcc_key, _dcc_work) are
+imported by tools.predict for SLURM submission.
+
+build_paired_a3m() constructs a ColabFold multimer A3M from a pre-computed target
+MSA and a peptide sequence, enabling MSA reuse across peptide panels.
+
+run_msa() is a legacy stub — the standalone cluster/msa_search.sh was removed when
+MSA search was folded into cluster/predict.sh. Use predict_structure() on a monomer
+FASTA to obtain a target A3M, then pass result.a3m_paths to build_paired_a3m().
 
 Environment variables (or set in .env):
   DCC_HOST      SSH target, default: zq36@dcc-login.oit.duke.edu
-  DCC_KEY       Path to SSH private key, default: ~/.ssh/id_dcc
+  DCC_KEY       Path to SSH private key, default: ~/.ssh/id_ed25519
   DCC_WORK      Base work directory on DCC, default: /work/zq36
-  DCC_CF_BIN    colabfold_search binary on DCC
   DCC_DB_DIR    MMseqs2 database directory on DCC
 """
 
 from __future__ import annotations
 
 import os
-import re
 import subprocess
-import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -37,18 +36,10 @@ def _dcc_host() -> str:
     return _cfg("DCC_HOST", "zq36@dcc-login.oit.duke.edu")
 
 def _dcc_key() -> str:
-    return _cfg("DCC_KEY", str(Path.home() / ".ssh" / "id_dcc"))
+    return _cfg("DCC_KEY", str(Path.home() / ".ssh" / "id_ed25519"))
 
 def _dcc_work() -> str:
     return _cfg("DCC_WORK", "/work/zq36")
-
-def _dcc_cf_bin() -> str:
-    return _cfg("DCC_CF_BIN", "/work/zq36/localcolabfold/.pixi/envs/default/bin/colabfold_search")
-
-def _dcc_db_dir() -> str:
-    return _cfg("DCC_DB_DIR", "/work/zq36/colabfold_db")
-
-_TEMPLATE = Path(__file__).parent.parent / "cluster" / "msa_search.sh"
 
 
 # ---------------------------------------------------------------------------
@@ -86,31 +77,6 @@ def _scp_from(remote: str, local: Path) -> None:
 # SLURM helpers
 # ---------------------------------------------------------------------------
 
-def _submit_job(job_name: str, remote_fasta: str, remote_out: str) -> str:
-    """Render the SLURM template and submit it. Returns the SLURM job ID."""
-    template = _TEMPLATE.read_text()
-    script = (template
-              .replace("__JOB_NAME__", job_name)
-              .replace("__FASTA__", remote_fasta)
-              .replace("__OUT_DIR__", remote_out)
-              .replace("__DB_DIR__", _dcc_db_dir()))
-
-    # Write rendered script to a temp file, SCP it, then sbatch it
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as f:
-        f.write(script)
-        tmp_path = Path(f.name)
-
-    remote_script = f"{_dcc_work()}/msa_logs/cf_msa_{job_name}.sh"
-    _ssh(f"mkdir -p {_dcc_work()}/msa_logs")
-    _scp_to(tmp_path, remote_script)
-    tmp_path.unlink()
-
-    result = _ssh(f"sbatch {remote_script}")
-    # sbatch output: "Submitted batch job 12345678"
-    match = re.search(r"(\d+)", result.stdout)
-    if not match:
-        raise RuntimeError(f"Could not parse job ID from sbatch output: {result.stdout}")
-    return match.group(1)
 
 
 def _job_status(job_id: str) -> str:
@@ -154,55 +120,64 @@ class MSAResult:
 def run_msa(fasta: Path, out_dir: Path, job_name: str | None = None) -> MSAResult:
     """Upload FASTA, run colabfold_search on DCC, download .a3m.
 
-    Args:
-        fasta:    Local FASTA file (single sequence).
-        out_dir:  Local directory to write the .a3m into.
-        job_name: Short label for the SLURM job. Defaults to stem of fasta + date.
+    DEPRECATED: cluster/msa_search.sh was removed when MSA search was folded into
+    cluster/predict.sh. This function will raise immediately.
 
-    Returns MSAResult. On success, local_a3m points to the downloaded file.
+    To obtain a target A3M for reuse with build_paired_a3m(), run predict_structure()
+    on a monomer FASTA — the result's a3m_paths field contains the downloaded A3Ms.
     """
-    if job_name is None:
-        job_name = f"{fasta.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    raise FileNotFoundError(
+        "cluster/msa_search.sh has been removed. "
+        "MSA search now runs inside cluster/predict.sh. "
+        "Call predict_structure() on a monomer FASTA to get an A3M, "
+        "then pass result.a3m_paths[0] to build_paired_a3m()."
+    )
 
-    work = _dcc_work()
-    remote_fasta = f"{work}/msa_inputs/{job_name}.fasta"
-    remote_out   = f"{work}/msa_outputs/{job_name}"
 
-    try:
-        # 1. Upload FASTA
-        _ssh(f"mkdir -p {work}/msa_inputs")
-        _scp_to(fasta, remote_fasta)
-        print(f"[msa] uploaded {fasta} → {_dcc_host()}:{remote_fasta}", flush=True)
+def _parse_a3m(path: Path) -> tuple[str, list[tuple[str, str]]]:
+    """Return (query_seq, [(header, seq), ...]) from a single-chain A3M file.
 
-        # 2. Submit SLURM job
-        job_id = _submit_job(job_name, remote_fasta, remote_out)
-        print(f"[msa] submitted job {job_id}", flush=True)
+    Preserves per-row >header lines. ColabFold requires a header before every
+    MSA row; discarding headers causes the entire file to be read as one giant
+    concatenated sequence when the paired A3M is parsed.
+    """
+    lines = path.read_text().splitlines()
+    if not lines or not lines[0].startswith(">"):
+        raise ValueError(f"Not a valid A3M file (no leading header): {path}")
 
-        # 3. Wait
-        final_state = _wait_for_job(job_id)
-        if final_state != "COMPLETED":
-            return MSAResult(success=False, job_id=job_id, local_a3m=None,
-                             final_state=final_state,
-                             error=f"Job ended with state {final_state}")
+    rows: list[tuple[str, str]] = []
+    query_seq: str | None = None
+    current_header: str = ""
+    current: list[str] = []
+    is_first = True
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(">"):
+            if current:
+                seq = "".join(current)
+                if is_first:
+                    query_seq = seq
+                    is_first = False
+                else:
+                    rows.append((current_header, seq))
+                current = []
+            current_header = stripped
+        elif stripped == "#":
+            continue  # chain-break markers only appear in multimer A3Ms
+        else:
+            current.append(stripped)
+    if current:
+        seq = "".join(current)
+        if is_first:
+            query_seq = seq
+        else:
+            rows.append((current_header, seq))
 
-        # 4. Download .a3m
-        result = _ssh(f"ls {remote_out}/*.a3m 2>/dev/null | head -1")
-        remote_a3m = result.stdout.strip()
-        if not remote_a3m:
-            return MSAResult(success=False, job_id=job_id, local_a3m=None,
-                             final_state=final_state,
-                             error="Job completed but no .a3m file found in output dir")
-
-        local_a3m = out_dir / Path(remote_a3m).name
-        _scp_from(remote_a3m, local_a3m)
-        print(f"[msa] downloaded {remote_a3m} → {local_a3m}", flush=True)
-
-        return MSAResult(success=True, job_id=job_id, local_a3m=local_a3m,
-                         final_state=final_state)
-
-    except Exception as e:
-        return MSAResult(success=False, job_id="unknown", local_a3m=None,
-                         final_state="ERROR", error=str(e))
+    if query_seq is None:
+        raise ValueError(f"No sequences found in {path}")
+    return query_seq, rows
 
 
 def build_paired_a3m(
@@ -210,36 +185,71 @@ def build_paired_a3m(
     peptide_id: str,
     target_a3m: Path,
     out_dir: Path,
+    complex_name: str | None = None,
+    n_target_copies: int = 1,
 ) -> Path:
-    """Produce a ColabFold-compatible paired A3M for one peptide against a pre-built target MSA.
+    """Build a ColabFold multimer A3M for a target:peptide complex from a cached target MSA.
 
-    Format written:
-        >{peptide_id}
-        {peptide_seq}
-        *                   ← ColabFold multimer chain-break separator
-        {target A3M verbatim}
+    Produces the ColabFold multimer A3M metadata format that unserialize_msa() in
+    colabfold/batch.py expects. The _split_by_aln function splits each MSA row into
+    per-chain segments by counting aligned (non-lowercase) positions against the chain
+    lengths encoded in the metadata header:
 
-    The resulting file is passed directly as the positional input to colabfold_batch
-    (instead of a FASTA), which causes ColabFold to skip the MSA lookup step.
-    This eliminates N-1 redundant MSA searches when running a peptide panel against
-    a single fixed target.
+        #<target_len>,<pep_len>\t1,1   ← metadata: chain lengths TAB cardinalities
+        >complex_name                   ← query header
+        TARGET_SEQ + PEPTIDE_SEQ        ← concatenated query (no ':' separator)
+        >UniRef100_HOM1_header
+        HOM1_SEQ                        ← target MSA rows; chain B segment empty → unpaired A
+        ...
+        >peptide_id
+        <target_len gaps>PEPTIDE_SEQ    ← chain A = gaps (no aa) → unpaired B
+
+    The paired block is effectively empty for peptide:protein complexes because short
+    peptides have no co-evolving homologs that pair with the target.
 
     Args:
-        peptide_seq:  Amino acid string for the peptide (chain A, single-sequence).
-        peptide_id:   Short identifier used in the filename and A3M header.
-        target_a3m:   Pre-computed A3M file for the target (chain B).
-        out_dir:      Directory to write the paired A3M into.
+        peptide_seq:   Amino acid string for the peptide (chain B).
+        peptide_id:    Short identifier used in the filename and header.
+        target_a3m:    Pre-computed single-chain A3M for the target protein (chain A).
+        out_dir:       Directory to write the paired A3M into.
+        complex_name:  Header name for the combined complex. Defaults to
+                       '{target_stem}_{peptide_id}'.
 
     Returns:
         Path to the written paired A3M file.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{peptide_id}_paired.a3m"
-    target_content = target_a3m.read_text()
+    name = complex_name or f"{target_a3m.stem}_{peptide_id}"
+    out_path = out_dir / f"{name}.a3m"
+
+    target_seq, msa_rows = _parse_a3m(target_a3m)
+    # TODO multi-chain targets (e.g. homodimer target): target_seq would need to come from
+    # a multimer A3M and len(target_seq) would need to reflect both chains' lengths.
+    # For now, target_seq is always a single-chain sequence.
+    target_gap = "-" * len(target_seq)
+
     with out_path.open("w") as f:
-        f.write(f">{peptide_id}\n{peptide_seq}\n*\n")
-        f.write(target_content)
-    print(f"[msa] wrote paired A3M → {out_path}", flush=True)
+        # Metadata: chain lengths TAB cardinalities.
+        # n_target_copies > 1 for homo-oligomeric targets (e.g. VEGF homodimer → 2).
+        f.write(f"#{len(target_seq)},{len(peptide_seq)}\t{n_target_copies},1\n")
+        f.write(f">{name}\n")
+        # Concatenated query sequence — no ':' separator; _split_by_aln splits by length
+        f.write(f"{target_seq}{peptide_seq}\n")
+        for header, row in msa_rows:
+            f.write(f"{header}\n")
+            # Write just the target sequence; _split_by_aln sees an empty chain B (→ unpaired A)
+            f.write(f"{row}\n")
+        # Peptide single-sequence: target_gap fills chain A aligned positions so
+        # _split_by_aln assigns the peptide to chain B (→ unpaired B)
+        f.write(f">{peptide_id}\n")
+        f.write(f"{target_gap}{peptide_seq}\n")
+
+    print(
+        f"[msa] wrote paired A3M → {out_path} "
+        f"(target {len(target_seq)} aa ×{n_target_copies}, "
+        f"peptide {len(peptide_seq)} aa, {len(msa_rows)} target MSA rows)",
+        flush=True,
+    )
     return out_path
 
 

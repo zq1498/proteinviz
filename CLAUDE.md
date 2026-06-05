@@ -1,5 +1,13 @@
 # Protein Structure Visualization Suite
 
+## Environment
+
+All Python commands should be run via `conda run -n proteinviz python` (or `conda run -n proteinviz <tool>`). Calling `python` will miss all project dependencies. Do not pip install anything into this conda env without permission
+
+Examples:
+- Running a script: `conda run -n proteinviz python tools/analyze.py`
+- One-liner checks: `conda run -n proteinviz python -c "from tools.analyze import analyze_sequence; ..."`
+
 ## What this project is
 
 An agentic pipeline for structural analysis of peptide-protein interactions. A user provides a task in natural language — typically a set of target proteins and a set of candidate peptides — and the agent orchestrates structure prediction, metric extraction, and contextualized reporting.

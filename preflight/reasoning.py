@@ -220,10 +220,13 @@ def estimate_runtime(n_targets: int, n_peptides: int, avg_length: int) -> float:
     """Rough runtime estimate in seconds for a full pairwise sweep on one GPU.
 
     Calibration TODO — replace constants after first real runs.
+    Might be kind of useless honestly since im usually gremlin running on scavenger gpus so it's
+    different hardware. Most of the runtimes tend to be CPU-bound MSA searches though, so I could be wrong
     """
     pairs = max(1, n_targets) * max(1, n_peptides or 1)
     per_pair_s = 60 + 0.5 * avg_length
-    return pairs * per_pair_s
+    return 0 # uncalibrated; populate from SLURM sacct wall-clock data
+    # return pairs * per_pair_s
 
 
 def validate_inputs(spec: TaskSpec) -> list[str]:
@@ -263,6 +266,7 @@ def suggest_analyses(spec: TaskSpec) -> list[str]:
     the call concretely.
     """
     suggestions: list[str] = []
+
     if len(spec.targets) > 1:
         suggestions.append(
             "Multiple targets — generate isoform-discrimination ΔipTM table across the panel."
@@ -315,6 +319,13 @@ def build_roadmap(spec: TaskSpec, feasibility: FeasibilityReport) -> Roadmap:
 
 
 def _binding_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
+    """Route to per-pair or panel path depending on peptide count."""
+    if len(spec.peptides) > 1:
+        return _panel_branch(spec)
+    return _single_pair_branch(spec)
+
+
+def _single_pair_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
     """Emit one Job per (target, peptide) pair with a predict + extract plan."""
     binding_tools = tools_for_subtask("subtask_binding")
     if not binding_tools:
@@ -323,7 +334,7 @@ def _binding_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
 
     n_pairs = len(spec.targets) * len(spec.peptides)
     steps = [
-        f"Predict {n_pairs} target-peptide complexes via {primary['id']}",
+        f"Predict {n_pairs} target-peptide complex(es) via {primary['id']}",
         "Extract ipTM, actifpTM, pLDDT, PAE per complex",
     ]
 
@@ -341,7 +352,7 @@ def _binding_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
                 plan=[
                     JobStep(
                         tool_id=primary["id"],
-                        kwargs={"fast": False},
+                        kwargs={"fast": False, "calc_extra_ptm": True},
                         input_bindings={
                             "fasta": "data_fasta_file",
                             "out_dir": "_job_dir",
@@ -363,6 +374,57 @@ def _binding_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
                     "target_id": target_id,
                     "peptide_id": peptide_id,
                     "kind": "binding",
+                },
+            ))
+    return steps, jobs
+
+
+def _panel_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
+    """Emit extraction-only Jobs for a multi-peptide panel.
+
+    Prediction is handled upstream by run_batch calling predict_panel per target
+    (one primary MSA job + SLURM array). By the time _run_one_job runs, each job's
+    data_colabfold_out_dir is already populated with the downloaded ColabFold outputs.
+    """
+    n_pairs = len(spec.targets) * len(spec.peptides)
+    steps = [
+        f"Submit {len(spec.targets)} panel job(s) via predict_panel "
+        f"({len(spec.peptides)} peptides × MSA-cached SLURM array, "
+        f"{len(spec.peptides) - 1} fewer colabfold_search run(s) per target)",
+        f"Wait for {n_pairs} prediction(s) and download results",
+        "Extract ipTM, actifpTM, pLDDT, PAE per complex",
+    ]
+
+    jobs: list[Job] = []
+    for ti, target in enumerate(spec.targets):
+        for pi, peptide in enumerate(spec.peptides):
+            target_id = f"target_{ti}"
+            peptide_id = f"peptide_{pi}"
+            jobs.append(Job(
+                job_id=f"{target_id}__{peptide_id}__{secrets.token_hex(4)}",
+                inputs={
+                    "data_aa_sequence": [target, peptide],
+                    "data_colabfold_out_dir": None,  # filled by run_batch after predict_panel
+                    "data_pdb_complex": None,         # filled by run_batch after predict_panel
+                    "data_pdb_file": None,            # filled by run_batch after predict_panel
+                },
+                plan=[
+                    JobStep(
+                        tool_id="tool_extract_colabfold",
+                        input_bindings={"out_dir": "data_colabfold_out_dir"},
+                        consumes=["data_pdb_complex"],
+                        produces=[
+                            "data_iptm_score", "data_actifptm_score",
+                            "data_ptm_score", "data_plddt_per_residue", "data_pae_matrix",
+                        ],
+                    ),
+                ],
+                metadata={
+                    "target_id": target_id,
+                    "target_idx": ti,
+                    "peptide_id": peptide_id,
+                    "peptide_idx": pi,
+                    "kind": "binding_panel",
                 },
             ))
     return steps, jobs
@@ -392,7 +454,7 @@ def _monomer_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
             plan=[
                 JobStep(
                     tool_id=primary["id"],
-                    kwargs={"fast": False},
+                    kwargs={"fast": False, "calc_extra_ptm": False},
                     input_bindings={
                         "fasta": "data_fasta_file",
                         "out_dir": "_job_dir",

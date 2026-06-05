@@ -29,3 +29,14 @@ literature/*
 .vscode/
 .idea/
 .DS_Store
+.env
+
+# Windows mark-of-the-web artifacts
+*:Zone.Identifier
+
+# Generated / example outputs (large binaries, vendored deps)
+dcc_colabfold_example_output/
+test_visualizations_output/
+
+# Scratch
+_test_*.py

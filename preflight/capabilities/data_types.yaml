@@ -120,6 +120,37 @@
   definition: Predicted change in folding free energy on mutation, in kcal/mol.
   parent: null
 
+- id: data_interface_score
+  label: REF2015 interface score
+  definition: >
+    InterfaceAnalyzerMover result for a complex: dG_separated (kcal/mol REU, REF2015),
+    dSASA (Å²), and interface residue count. dG_separated is the primary binding energy
+    estimate — more negative = stronger predicted binding.
+  parent: null
+
+- id: data_per_residue_energy
+  label: Per-residue REF2015 energy
+  definition: >
+    Per-residue total energy contribution from the REF2015 score function (kcal/mol REU).
+    Carries both Rosetta sequential numbering and PDB numbering for cross-referencing.
+  parent: null
+
+- id: data_ala_scan_result
+  label: Alanine scan ΔΔG per residue
+  definition: >
+    Per-interface-residue ΔΔG values from a single-point alanine scan. Positive ΔΔG
+    indicates the wildtype residue contributes favorably — hot-spot candidate. Carries
+    chain, PDB residue number, residue name, and ΔΔG.
+  parent: null
+
+- id: data_confident_hotspot_list
+  label: pLDDT-filtered hot-spot list
+  definition: >
+    Alanine scan results cross-referenced with per-residue pLDDT from the ColabFold
+    unrelaxed PDB. Each entry is annotated confident (pLDDT >= threshold) or uncertain;
+    sorted confident-first then by ΔΔG descending within each tier.
+  parent: null
+
 - id: data_tm_score
   label: TM-score
   definition: Template Modeling score between two structures, range 0-1.

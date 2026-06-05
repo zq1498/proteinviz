@@ -7,7 +7,8 @@
 
 - id: tool_colabfold
   label: ColabFold
-  definition: AlphaFold2-based structure prediction (monomer and multimer) via local CLI in WSL.
+  tier: 1
+  definition: AlphaFold2-based structure prediction (monomer and multimer) via SLURM job on DCC.
   subtask:
     - subtask_folding
     - subtask_binding
@@ -24,11 +25,44 @@
     - data_ptm_score
     - data_iptm_score
     - data_actifptm_score
-  wrapper: tools.predict.run_colabfold
+  wrapper: tools.predict.predict_structure
   invocation: cli_subprocess
+
+- id: tool_predict_panel
+  label: ColabFold panel (MSA-cached)
+  tier: 1
+  definition: >
+    MSA-reuse panel pipeline for screening N peptides against one target. Submits a
+    primary SLURM job (colabfold_search on the target monomer, SEARCH_ONLY=1) then a
+    SLURM array job (one task per peptide) that builds paired A3Ms on the DCC node from
+    the cached target MSA and runs colabfold_batch in parallel. Eliminates N-1 redundant
+    MSA searches vs. calling tool_colabfold per pair. Supports homo-oligomeric targets
+    (homodimers etc.) via n_target_copies in the A3M metadata header. Returns immediately
+    (PanelResult); results must be downloaded from DCC once the array completes.
+  subtask:
+    - subtask_binding
+  has_input:
+    - data_fasta_file
+    - data_aa_sequence
+  has_output:
+    - data_pdb_complex
+    - data_iptm_score
+    - data_actifptm_score
+    - data_plddt_per_residue
+    - data_a3m_msa
+  wrapper: tools.predict.predict_panel
+  invocation: cli_subprocess
+  notes: >
+    Preferred over tool_colabfold for any panel with N >= 2 peptides per target.
+    Wired into tools/batch.py: build_roadmap routes binding tasks with N > 1 peptides
+    to _panel_branch, which emits extraction-only Jobs; run_batch calls predict_panel
+    per target before the job loop, waits for the SLURM array, downloads results, and
+    populates data_colabfold_out_dir on each job. Heterodimeric targets not supported —
+    use tool_colabfold for those until the multi-chain MSA path is implemented.
 
 - id: tool_boltz1
   label: Boltz-1
+  tier: 3 # Not implemented 
   definition: Open-source AF3-class biomolecular structure predictor handling proteins, complexes, and small molecules.
   subtask:
     - subtask_folding
@@ -53,6 +87,7 @@
 
 - id: tool_extract_colabfold
   label: ColabFold output extractor
+  tier: 1
   definition: Parses a ColabFold output directory into ExtractedMetrics records (pLDDT, PAE, pTM, ipTM, actifpTM) — one per ranked model.
   subtask:
     - subtask_folding
@@ -70,37 +105,12 @@
   wrapper: tools.extract.extract_colabfold
   invocation: python_api
 
-# ---- MSA generation ----
-
-- id: tool_colabfold_search
-  label: colabfold_search
-  definition: MMseqs2-based MSA search producing A3M alignments for use with ColabFold.
-  subtask:
-    - subtask_msa_generation
-  has_input:
-    - data_fasta_file
-  has_output:
-    - data_a3m_msa
-  wrapper: tools.predict.run_colabfold_msa_only
-  invocation: cli_subprocess
-
-- id: tool_dcc_msa
-  label: DCC SLURM MSA pipeline
-  definition: Cluster-based MSA generation via SSH/SCP/sbatch on the Duke Compute Cluster.
-  subtask:
-    - subtask_msa_generation
-  has_input:
-    - data_fasta_file
-  has_output:
-    - data_a3m_msa
-  wrapper: tools.msa.run_msa
-  invocation: cli_subprocess
-
 # ---- Disorder prediction ----
 
 - id: tool_iupred3
-  label: IUPred3
-  definition: Energy-estimation-based per-residue disorder predictor served via REST API.
+  label: AIUPred (local)
+  tier: 1
+  definition: Deep-learning per-residue disorder predictor via the local AIUPred package (PyTorch). REST API endpoint (iupred3.elte.hu) is defunct; query_aiupred() is the live implementation. query_iupred3 is a legacy alias.
   subtask:
     - subtask_disorder_core
   has_input:
@@ -108,23 +118,12 @@
   has_output:
     - data_disorder_per_residue
     - data_disorder_summary
-  wrapper: tools.analyze.query_iupred3
-  invocation: rest_api
-
-- id: tool_anchor2
-  label: ANCHOR2
-  definition: Disorder-mediated binding site predictor; same REST endpoint as IUPred3.
-  subtask:
-    - subtask_disorder_binding
-  has_input:
-    - data_aa_sequence
-  has_output:
-    - data_anchor_per_residue
-  wrapper: null
-  invocation: rest_api
+  wrapper: tools.analyze.query_aiupred
+  invocation: local_python
 
 - id: tool_metapredict
   label: metapredict V3
+  tier: 1
   definition: Fast offline per-residue disorder predictor; SOTA-accurate consensus model.
   subtask:
     - subtask_disorder_core
@@ -133,13 +132,14 @@
   has_output:
     - data_disorder_per_residue
     - data_disorder_summary
-  wrapper: null
-  invocation: python_api
+  wrapper: tools.metapredict.predict_disorder
+  invocation: python_api # subprocess bridge to proteinviz_metapredict conda env
 
 # ---- Sequence biophysics ----
 
 - id: tool_localcider
   label: localCIDER
+  tier: 1
   definition: Sequence-based biophysical descriptors for IDRs — charge patterning, composition, hydropathy.
   subtask:
     - subtask_disorder_ensemble
@@ -149,13 +149,14 @@
     - data_kappa
     - data_ncpr
     - data_fcr
-  wrapper: null
+  wrapper: tools.analyze.analyze_cider
   invocation: python_api
 
 # ---- Structural analysis ----
 
 - id: tool_freesasa
   label: FreeSASA
+  tier: 1
   definition: Solvent-accessible surface area calculation from a PDB structure.
   subtask:
     - subtask_structural_analysis
@@ -167,11 +168,12 @@
     - data_sasa_per_residue
     - data_sasa_total
     - data_buried_surface_area
-  wrapper: null
+  wrapper: tools.analyze.analyze_structure
   invocation: python_api
 
 - id: tool_biopython_dssp
   label: Biopython DSSP
+  tier: 3
   definition: Secondary structure assignment via Biopython wrapping the mkdssp binary.
   subtask:
     - subtask_structural_analysis
@@ -185,6 +187,7 @@
 
 - id: tool_biotite
   label: Biotite
+  tier: 3
   definition: Comprehensive Python structural library — parsing, atom selection, secondary structure, SASA.
   subtask:
     - subtask_structural_analysis
@@ -199,6 +202,7 @@
 
 - id: tool_netsurfp3
   label: NetSurfP-3
+  tier: 3
   definition: Sequence-only secondary structure, RSA, and disorder prediction using ESM-1b embeddings.
   subtask:
     - subtask_structural_analysis
@@ -216,6 +220,7 @@
 
 - id: tool_tmtools
   label: tmtools
+  tier: 1
   definition: TM-align-based structural superposition, TM-score, and Calpha RMSD between two PDBs.
   subtask:
     - subtask_structural_analysis
@@ -231,6 +236,7 @@
 
 - id: tool_pdbepisa
   label: PDBePISA
+  tier: 3
   definition: EBI-hosted assembly-level interface analysis — buried surface area, oligomeric state, complex stability.
   subtask:
     - subtask_ppi
@@ -247,6 +253,7 @@
 
 - id: tool_foldx
   label: FoldX
+  tier: 3
   definition: Empirical force-field-based ddG prediction for point mutations.
   subtask:
     - subtask_mutation
@@ -256,3 +263,79 @@
     - data_ddg_value
   wrapper: null
   invocation: cli_subprocess
+
+# ---- PyRosetta energy analysis ----
+# These tools run via subprocess bridge: tools/rosetta.py (proteinviz env, Python 3.12)
+# spawns tools/pyrosetta_worker.py under proteinviz_pyrosetta (Python 3.14, REF2015).
+# All functions are fully implemented and callable. Tier 2 because the proteinviz_pyrosetta
+# conda env (JHU channel, py314_0 wheel) was non-trivial to set up.
+
+- id: tool_rosetta_score_interface
+  label: PyRosetta interface scorer
+  tier: 1
+  definition: >
+    REF2015 interface energy via InterfaceAnalyzerMover (pack_separated=True).
+    Returns dG_separated (kcal/mol REU), dSASA (Å²), and interface residue count.
+    Supports arbitrary chain-jump strings (e.g. "A_B", "AB_C" for homodimer panels).
+  subtask:
+    - subtask_ppi
+    - subtask_binding
+  has_input:
+    - data_pdb_complex
+  has_output:
+    - data_interface_score
+  wrapper: tools.rosetta.score_interface
+  invocation: python_api
+
+- id: tool_rosetta_per_residue_energies
+  label: PyRosetta per-residue energies
+  tier: 1
+  definition: >
+    Per-residue total energy contributions from the REF2015 score function (kcal/mol REU).
+    Returns both Rosetta sequential numbering and PDB numbering for cross-referencing
+    with ColabFold outputs. Useful for identifying high-energy (clashed or strained) regions.
+  subtask:
+    - subtask_structural_analysis
+  has_input:
+    - data_pdb_file
+  has_output:
+    - data_per_residue_energy
+  wrapper: tools.rosetta.per_residue_energies
+  invocation: python_api
+
+- id: tool_rosetta_alanine_scan
+  label: PyRosetta alanine scan
+  tier: 1
+  definition: >
+    Single-point alanine scan across interface residues, sorted by ΔΔG descending.
+    Fast mode (default): ΔΔG = sfxn(complex_mut) − sfxn(complex_wt) — good for relative
+    ranking within a panel. Rigorous mode: ΔΔG = ΔG_separated(mut) − ΔG_separated(wt)
+    with FastRelax on each mutant — correct binding ddG, ~2–5× slower per residue.
+    Ala and Gly residues are skipped (no sidechain to remove).
+  subtask:
+    - subtask_mutation
+    - subtask_ppi
+  has_input:
+    - data_pdb_complex
+  has_output:
+    - data_ala_scan_result
+  wrapper: tools.rosetta.alanine_scan
+  invocation: python_api
+
+- id: tool_rosetta_confidence_filter
+  label: PyRosetta pLDDT confidence filter
+  tier: 1
+  definition: >
+    Cross-references alanine scan results with per-residue pLDDT from the ColabFold
+    unrelaxed PDB. Flags each hit confident (pLDDT >= threshold, default 70.0) or uncertain;
+    returns them sorted confident-first then by ΔΔG descending within each tier.
+    Input plddt_pdb MUST be the unrelaxed ColabFold PDB — Amber relaxation zeroes B-factors.
+  subtask:
+    - subtask_mutation
+  has_input:
+    - data_ala_scan_result
+    - data_pdb_file
+  has_output:
+    - data_confident_hotspot_list
+  wrapper: tools.rosetta.confidence_filter_scan
+  invocation: python_api

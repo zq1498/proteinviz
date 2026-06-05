@@ -12,6 +12,7 @@ import pytest
 from tools.extract import (
     DEFAULT_SCORE_WEIGHTS,
     ExtractedMetrics,
+    _parse_pdb_chain_plddt,
     composite_score,
     extract_colabfold,
 )
@@ -82,10 +83,10 @@ def test_composite_score_falls_back_to_iptm():
 
 
 def test_composite_score_handles_missing_iptm_and_actifptm():
+    # Falls back to ranking_score (ptm=0.7): 0.5*0.7 + 0.3*0.80 = 0.59
     m = _make_metric(iptm=None, actifptm=None, mean_plddt=80.0)
-    # 0.5*0.0 + 0.3*0.80 = 0.24
     score = composite_score(m)
-    assert abs(score - 0.24) < 1e-9
+    assert abs(score - 0.59) < 1e-9
 
 
 def test_composite_score_includes_interface_plddt_when_supplied():
@@ -100,3 +101,46 @@ def test_composite_score_respects_custom_weights():
     weights = {"primary": 1.0, "mean_plddt": 0.0, "interface_plddt": 0.0}
     score = composite_score(m, weights=weights)
     assert abs(score - 0.5) < 1e-9
+
+
+def test_composite_score_uses_actifptm_when_two_chains():
+    m = _make_metric(iptm=0.55, actifptm=0.97, mean_plddt=74.0,
+                     per_chain_plddt={"A": 76.0, "C": 25.0})
+    # n_chains=2 → actifpTM used: 0.5*0.97 + 0.3*0.74 = 0.485 + 0.222 = 0.707
+    score = composite_score(m)
+    assert abs(score - (0.5 * 0.97 + 0.3 * 0.74)) < 1e-9
+
+
+def test_composite_score_demotes_actifptm_for_three_chain_complex():
+    # Simulates homodimer + peptide: actifpTM inflated by dimer interface.
+    # With n_chains=3, ipTM is used as primary instead.
+    m = _make_metric(iptm=0.55, actifptm=0.97, mean_plddt=74.0,
+                     per_chain_plddt={"A": 76.0, "B": 75.5, "C": 25.0})
+    # n_chains=3 → ipTM used: 0.5*0.55 + 0.3*0.74 = 0.275 + 0.222 = 0.497
+    score = composite_score(m)
+    assert abs(score - (0.5 * 0.55 + 0.3 * 0.74)) < 1e-9
+
+
+def test_composite_score_three_chain_is_lower_than_two_chain():
+    # Same raw metrics; 3-chain demotion should yield a lower composite score.
+    two_chain = _make_metric(iptm=0.55, actifptm=0.97, mean_plddt=74.0,
+                             per_chain_plddt={"A": 76.0, "C": 25.0})
+    three_chain = _make_metric(iptm=0.55, actifptm=0.97, mean_plddt=74.0,
+                               per_chain_plddt={"A": 76.0, "B": 75.5, "C": 25.0})
+    assert composite_score(three_chain) < composite_score(two_chain)
+
+
+def test_parse_pdb_chain_plddt_reads_bfactor_by_chain(tmp_path):
+    pdb = tmp_path / "test.pdb"
+    pdb.write_text(
+        "ATOM      1  CA  ALA A   1       1.000   1.000   1.000  1.00 80.00           C\n"
+        "ATOM      2  CA  ALA A   2       2.000   2.000   2.000  1.00 90.00           C\n"
+        "ATOM      3  CA  ALA B   1       3.000   3.000   3.000  1.00 30.00           C\n"
+    )
+    result = _parse_pdb_chain_plddt(pdb)
+    assert result == {"A": 85.0, "B": 30.0}
+
+
+def test_parse_pdb_chain_plddt_returns_empty_when_file_missing():
+    result = _parse_pdb_chain_plddt(Path("/nonexistent/file.pdb"))
+    assert result == {}

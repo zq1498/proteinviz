@@ -10,7 +10,7 @@ This file is the source of truth for "what methods does the agent have available
 
 | Tool | Tier | Access | Install | Notes |
 |---|---|---|---|---|
-| ColabFold | 1 | Local CLI via WSL | Already installed (`/home/zach/localcolabfold/.pixi/envs/default/bin/colabfold_batch`) | Primary backend; full pLDDT/PAE/pTM. Wrapped in `tools/predict.py`. |
+| ColabFold | 1 | DCC cluster via SLURM | Runs on DCC — submitted by `tools/predict.py` via SSH/sbatch. No local install. | Primary backend; full pLDDT/PAE/pTM. Wrapped in `tools/predict.py`. |
 | Boltz-1 | 1 | Local CLI + Python | `pip install boltz` | Open-source, AF3-class accuracy. CLI: `boltz predict input.yaml`. Returns PDB + confidence JSON. Drop-in second backend. |
 | ESMFold (Atlas API) | 2 | REST `POST api.esmatlas.com/foldSequence` | None — HTTP only | Meta archived the repo Aug 2024; service has had outages. Treat as unreliable fallback for monomer sanity checks. |
 | ESMFold (local) | 3 | Local install | Heavy (PyTorch + ~3GB weights) | Not worth the setup cost given ColabFold + Boltz-1 cover the use case. |
@@ -24,7 +24,7 @@ This file is the source of truth for "what methods does the agent have available
 | FreeSASA | 1 | Python API | `pip install freesasa` | SASA, buried surface area, per-residue/per-atom. Takes Bio.PDB structure directly. Fills SASA stub in `tools/analyze.py`. |
 | Biotite | 1 | Python API | `pip install biotite` | Comprehensive structural library: parsing, SASA, DSSP interface, atom selection. NumPy-native, fast. Good primary structure manipulation layer. |
 | Biopython DSSP | 1 | Python API + binary | `pip install biopython` + `mkdssp` (apt/conda in WSL) | Secondary structure assignment via `Bio.PDB.DSSP`. Needs `mkdssp` binary one-time setup. |
-| tmtools | 1 | Python via WSL subprocess | Already in WSL pixi env | TM-score + Cα RMSD. Wrapped in `tools/compare.py`. |
+| tmtools | 1 | Python API | Installed in `proteinviz` conda env | TM-score + Cα RMSD. Wrapped in `tools/compare.py`. |
 | NetSurfP-3 | 2 | Local CLI | `pip install -e .` from github.com/Eryk96/NetSurfP-3.0; needs ESM-1b weights (~700MB) | Sequence-only secondary structure, RSA, disorder. Useful when no PDB exists yet. Non-trivial setup. |
 | PDBePISA | 1 | REST | None — HTTP only | `www.ebi.ac.uk/pdbe/pisa/` for assembly-level interface analysis, BSA, stability. Cleaner than manual SASA differences for PPI interfaces. |
 

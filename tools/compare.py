@@ -1,7 +1,7 @@
 """Structural comparison: predicted PDB vs reference PDB.
 
-Computes TM-score and Cα RMSD via tmtools (installed in WSL pixi env).
-Optionally enriches with pLDDT from a ColabFold score JSON.
+Computes TM-score and Cα RMSD via tmtools. Optionally enriches with pLDDT
+from a ColabFold score JSON.
 
 Usage:
     python -m tools.compare --pred jobs/3v03/3v03_rank_001.pdb --ref 3V03.pdb
@@ -11,15 +11,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from tools.predict import _wsl_distro, _wsl_env, to_wsl_path
-
-_PIXI_PYTHON = "/home/zach/localcolabfold/.pixi/envs/default/bin/python"
-_INNER_SCRIPT = Path(__file__).parent / "_compare_inner.py"
+import numpy as np
+from tmtools import tm_align
 
 
 @dataclass
@@ -36,6 +32,45 @@ class ComparisonResult:
     ptm: float | None = None
 
 
+_AA3TO1 = {
+    "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
+    "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
+    "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P",
+    "SER": "S", "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V",
+    "SEC": "U", "PYL": "O", "MSE": "M",
+}
+
+
+def parse_ca_coords(pdb_path: Path, chain: str | None = None) -> tuple[np.ndarray, str]:
+    """Extract Cα coordinates and one-letter sequence from a PDB file.
+
+    Returns (coords, sequence) where coords is (N, 3) float32.
+    If chain is None, uses the first chain encountered.
+    """
+    coords: list[list[float]] = []
+    seq: list[str] = []
+    seen_chain = chain
+    last_res_num: int | None = None
+
+    with open(pdb_path) as f:
+        for line in f:
+            if not line.startswith("ATOM"):
+                continue
+            atom_name = line[12:16].strip()
+            res_name = line[17:20].strip()
+            c = line[21]
+            res_num = int(line[22:26])
+            if seen_chain is None:
+                seen_chain = c
+            if c != seen_chain or atom_name != "CA" or res_num == last_res_num:
+                continue
+            last_res_num = res_num
+            coords.append([float(line[30:38]), float(line[38:46]), float(line[46:54])])
+            seq.append(_AA3TO1.get(res_name, "X"))
+
+    return np.array(coords, dtype=np.float32), "".join(seq)
+
+
 def compare(
     pred_pdb: Path,
     ref_pdb: Path,
@@ -43,46 +78,20 @@ def compare(
     pred_chain: str | None = None,
     ref_chain: str | None = None,
 ) -> ComparisonResult:
-    """Align pred_pdb to ref_pdb, compute TM-score + RMSD.
+    """Align pred_pdb to ref_pdb, compute TM-score + Cα RMSD."""
+    pred_coords, pred_seq = parse_ca_coords(pred_pdb, pred_chain)
+    ref_coords, ref_seq = parse_ca_coords(ref_pdb, ref_chain)
 
-    score_json: optional ColabFold scores JSON to attach pLDDT + pTM.
-    """
-    wsl_pred = to_wsl_path(pred_pdb)
-    wsl_ref = to_wsl_path(ref_pdb)
-    wsl_script = to_wsl_path(_INNER_SCRIPT)
-
-    cmd = [
-        "wsl.exe", "-d", _wsl_distro(), "--",
-        _PIXI_PYTHON, wsl_script,
-        "--pred", wsl_pred,
-        "--ref", wsl_ref,
-    ]
-    if pred_chain:
-        cmd += ["--pred-chain", pred_chain]
-    if ref_chain:
-        cmd += ["--ref-chain", ref_chain]
-
-    proc = subprocess.run(
-        cmd,
-        env=_wsl_env(),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"comparison failed: {proc.stderr}")
-
-    data = json.loads(proc.stdout)
+    alignment = tm_align(pred_coords, ref_coords, pred_seq, ref_seq)
 
     result = ComparisonResult(
         pred_pdb=pred_pdb,
         ref_pdb=ref_pdb,
-        tmscore_pred=data["tmscore_pred"],
-        tmscore_ref=data["tmscore_ref"],
-        rmsd_ca=data["rmsd_ca"],
-        n_pred=data["n_pred"],
-        n_ref=data["n_ref"],
+        tmscore_pred=float(alignment.tm_norm_chain1),
+        tmscore_ref=float(alignment.tm_norm_chain2),
+        rmsd_ca=float(alignment.rmsd),
+        n_pred=len(pred_seq),
+        n_ref=len(ref_seq),
     )
 
     if score_json and score_json.exists():
@@ -100,7 +109,7 @@ def print_report(r: ComparisonResult) -> None:
     print(f"  Residues  pred={r.n_pred}  ref={r.n_ref}")
     print(f"  TM-score (norm by pred) : {r.tmscore_pred:.4f}")
     print(f"  TM-score (norm by ref)  : {r.tmscore_ref:.4f}")
-    print(f"  Ca RMSD                 : {r.rmsd_ca:.2f} A")
+    print(f"  Ca RMSD                 : {r.rmsd_ca:.2f} Å")
     if r.mean_plddt is not None:
         print(f"  Mean pLDDT              : {r.mean_plddt:.1f}")
     if r.ptm is not None:
@@ -121,7 +130,7 @@ def _interpret(r: ComparisonResult) -> None:
         verdict = "Different fold or poor prediction (TM < 0.50)."
     print(f"  Interpretation: {verdict}")
     if r.rmsd_ca > 3.0:
-        print(f"  Note: Ca RMSD {r.rmsd_ca:.1f} A is above 3 A — local deviations likely in loops or termini.")
+        print(f"  Note: Cα RMSD {r.rmsd_ca:.1f} Å — local deviations likely in loops or termini.")
 
 
 def main() -> None:

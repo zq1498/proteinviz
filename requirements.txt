@@ -5,6 +5,7 @@ biopython>=1.83
 
 # Structure analysis
 freesasa>=2.2
+tmtools>=0.0.2
 
 # Visualization
 py3Dmol>=2.0

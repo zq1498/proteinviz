@@ -20,10 +20,27 @@ class ExtractedMetrics:
     min_plddt: float
     max_plddt: float
     per_residue_plddt: list[float] = field(default_factory=list)
+    per_chain_plddt: dict[str, float] = field(default_factory=dict)
     pae: list[list[float]] | None = None
     iptm: float | None = None
     actifptm: float | None = None
     ranking_score: float | None = None
+
+
+def _parse_pdb_chain_plddt(pdb_path: Path) -> dict[str, float]:
+    """Mean pLDDT per chain from PDB B-factor column. Returns {} if PDB not found."""
+    chain_bfactors: dict[str, list[float]] = {}
+    try:
+        for line in pdb_path.read_text().splitlines():
+            if line.startswith("ATOM"):
+                chain = line[21]
+                try:
+                    chain_bfactors.setdefault(chain, []).append(float(line[60:66]))
+                except ValueError:
+                    continue
+    except FileNotFoundError:
+        return {}
+    return {ch: sum(v) / len(v) for ch, v in chain_bfactors.items()}
 
 
 def extract_colabfold(out_dir: Path) -> list[ExtractedMetrics]:
@@ -64,10 +81,11 @@ def extract_colabfold(out_dir: Path) -> list[ExtractedMetrics]:
             min_plddt=min(plddt) if plddt else 0.0,
             max_plddt=max(plddt) if plddt else 0.0,
             per_residue_plddt=plddt,
+            per_chain_plddt=_parse_pdb_chain_plddt(pdb_path),
             pae=pae,
             iptm=data.get("iptm"),
-            actifptm=data.get("actifptm"),
-            ranking_score=data.get("ptm"),
+            actifptm=data.get("actifptm"), # pairwise_actifptm ({'A-B': 0.934} also available
+            ranking_score=data.get("ptm"), # per_chain_ptm ({'A': 0.885, 'B': 0.032} also available
         ))
 
     return results
@@ -101,12 +119,24 @@ def composite_score(
     """Composite ranking score for binder triage.
 
     Placeholder weighting; tune on calibration set before trusting rankings.
-        score = weights["primary"] * actifpTM (or ipTM)
+        primary = actifpTM if present (2-chain only), else ipTM, else ptm
+        score = weights["primary"] * primary
               + weights["mean_plddt"] * (mean_plddt / 100)
               + weights["interface_plddt"] * (interface_plddt / 100) if provided
+
+    actifpTM is only used as primary for 2-chain complexes. In 3+ chain setups
+    (e.g., homodimer + peptide) actifpTM is dominated by the most confident
+    inter-chain interface — typically the structured dimer — not the peptide
+    interface, so it inflates the score regardless of peptide binding quality.
     """
     w = weights
-    primary = m.actifptm if m.actifptm is not None else (m.iptm or 0.0)
+    n_chains = len(m.per_chain_plddt)
+    if m.actifptm is not None and n_chains in (0, 2):
+        primary = m.actifptm
+    elif m.iptm is not None:
+        primary = m.iptm
+    else:
+        primary = m.ranking_score or 0.0  # ptm for monomers
     score = w["primary"] * primary + w["mean_plddt"] * (m.mean_plddt / 100.0)
     if interface_plddt is not None:
         score += w["interface_plddt"] * (interface_plddt / 100.0)
