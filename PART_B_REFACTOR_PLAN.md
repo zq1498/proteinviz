@@ -1,6 +1,12 @@
 # Part B — Orchestrator + registry hybrid refactor (handoff plan)
 
-**Status:** not started. Part A (report wiring) is complete and committed; this is the next phase.
+**Status:** B1–B4 + B6 complete and committed; B5 **v1** complete (always-on structure+sequence
+analysis routed through the registry + opt-in sequence analyses via `TaskSpec.requested_analyses` +
+`JobStep.optional` non-fatal steps; `_run_post_plan_analysis` retired). **Remaining B5 follow-ups**
+(not yet done): the `alanine_scan → confidence_filter` Rosetta hotspot chain (§2 B5.4–5), and report
+rendering of opt-in disorder/CIDER results (§3.4 — data now flows into `job.results` but `tools/report.py`
+does not surface it yet). Note: relaxed/unrelaxed PDB plumbing (§3.3) is a no-op at the default
+`USE_AMBER=0` (ColabFold emits only unrelaxed PDBs, which is what `confidence_filter` needs).
 **Audience:** a fresh Claude Code session with no prior context. Everything needed is below.
 **Repo:** `/home/zach/proteinviz/proteinviz` · run Python as `conda run -n proteinviz python` ·
 tests: `conda run -n proteinviz python -m pytest -q` (config in `pytest.ini`, `testpaths = tests`).
