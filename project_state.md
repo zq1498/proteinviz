@@ -196,8 +196,10 @@ in `rosetta.py`. See module docstrings for the full pattern.
   and `list[str]` (multimer, ColabFold ':' convention).
 - `_bind_inputs()`: resolves `JobStep.input_bindings` to call kwargs. Reserved keys:
   `_job_dir` → `Path`, `_msa_cache` → MSA cache path (reserved for v2).
-- `_propagate_outputs()`: exposes rank-1 PDB from a prediction step as `data_pdb_complex` /
-  `data_pdb_file` for downstream extraction steps.
+- `_propagate_outputs(job, tool_id, result)`: **registry-driven (B2)** — drives propagation from
+  the tool's `output_map` (resolved via `_resolve_output_expr`: `"."` / `attr` / `attr[0]`), writing
+  each resolved value into `job.inputs[data_id]` for downstream bindings; skips None/empty. Terminal
+  tools (no `output_map`) propagate nothing. Reproduces the old rank-1-PDB behaviour for ColabFold.
 - Persistence: `job_meta.json` written per job; `batch.log` and `failure.log` in each job dir.
 - CLI: `python -m tools.batch --targets ... --peptides ... [--abort-on-failure]`.
 

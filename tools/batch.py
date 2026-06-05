@@ -27,7 +27,7 @@ from typing import Any
 from preflight.jobs import BatchResult, Job, JobStep
 from preflight.reasoning import (
     Roadmap, TaskSpec, FeasibilityReport,
-    build_roadmap, estimate_runtime, resolve_wrapper,
+    build_roadmap, estimate_runtime, lookup_tool, resolve_wrapper,
 )
 
 
@@ -215,7 +215,7 @@ def _run_one_job(job: Job, jobs_root: Path, abort_on_failure: bool) -> None:
             _log(job, f"step {i + 1}/{len(job.plan)}: {step.tool_id}({_shorten(kwargs)})")
             result = wrapper(**kwargs)
             job.results[step.tool_id] = result
-            _propagate_outputs(job, result)
+            _propagate_outputs(job, step.tool_id, result)
         job.status = "done"
         (job.job_dir / "done.flag").touch()
         _run_post_plan_analysis(job)
@@ -279,19 +279,43 @@ def _ensure_fasta(inputs: dict[str, Any], job_dir: Path) -> dict[str, Any]:
     return inputs
 
 
-def _propagate_outputs(job: Job, result: Any) -> None:
-    """Expose common step outputs as job.inputs entries so later steps can consume them.
+def _propagate_outputs(job: Job, tool_id: str, result: Any) -> None:
+    """Expose a step's outputs as job.inputs entries so later steps can consume them.
 
-    Conservative: handles the cases we know about. Easy to extend as new
-    output shapes appear.
+    Registry-driven: reads the tool's `output_map` (data_* id -> attribute
+    expression) and resolves each expression against the wrapper's return value.
+    A tool with no output_map (analysis tools read straight from job.results)
+    propagates nothing. Behaviour for tool_colabfold matches the previous
+    hardcoded pdb_paths[0] -> data_pdb_complex/data_pdb_file mapping.
     """
-    pdb_paths = getattr(result, "pdb_paths", None)
-    if pdb_paths:
-        # Treat the rank-1 PDB as the canonical output for downstream steps.
-        if "data_pdb_complex" not in job.inputs or job.inputs["data_pdb_complex"] is None:
-            job.inputs["data_pdb_complex"] = pdb_paths[0]
-        if "data_pdb_file" not in job.inputs or job.inputs["data_pdb_file"] is None:
-            job.inputs["data_pdb_file"] = pdb_paths[0]
+    entry = lookup_tool(tool_id)
+    for data_id, expr in entry.get("output_map", {}).items():
+        val = _resolve_output_expr(result, expr)
+        # Skip absent (None) and empty-collection outputs so a step that produced
+        # nothing (e.g. no A3Ms downloaded) does not shadow a value set upstream.
+        if val is None or (isinstance(val, (list, tuple)) and not val):
+            continue
+        job.inputs[data_id] = val
+
+
+def _resolve_output_expr(result: Any, expr: str) -> Any:
+    """Resolve an output_map expression against a wrapper's return value.
+
+    Supports exactly three forms (no eval):
+        "."       -> the whole result object
+        attr      -> getattr(result, attr)
+        attr[0]   -> first element of a list-valued attribute (None if empty)
+    Returns None when an attribute is missing or an indexed list is empty, so
+    the caller can skip propagating absent outputs.
+    """
+    if expr == ".":
+        return result
+    if expr.endswith("[0]"):
+        seq = getattr(result, expr[:-3], None)
+        if seq:
+            return seq[0]
+        return None
+    return getattr(result, expr, None)
 
 
 # ---------------------------------------------------------------------------

@@ -97,8 +97,76 @@ def test_ensure_fasta_rejects_invalid_sequence_type(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 from preflight.jobs import BatchResult, Job
-from tools.batch import build_panel_report_inputs, emit_reports
+from tools.batch import (
+    _propagate_outputs,
+    _resolve_output_expr,
+    build_panel_report_inputs,
+    emit_reports,
+)
 from tools.extract import ExtractedMetrics
+
+
+# ---------------------------------------------------------------------------
+# _resolve_output_expr — the three supported expression forms
+# ---------------------------------------------------------------------------
+
+class _FakeResult:
+    def __init__(self, pdb_paths=None, a3m_paths=None):
+        self.pdb_paths = pdb_paths if pdb_paths is not None else []
+        self.a3m_paths = a3m_paths if a3m_paths is not None else []
+
+
+def test_resolve_output_expr_whole_result():
+    r = _FakeResult()
+    assert _resolve_output_expr(r, ".") is r
+
+
+def test_resolve_output_expr_plain_attr():
+    r = _FakeResult(a3m_paths=[Path("/tmp/a.a3m")])
+    assert _resolve_output_expr(r, "a3m_paths") == [Path("/tmp/a.a3m")]
+
+
+def test_resolve_output_expr_index_first_element():
+    r = _FakeResult(pdb_paths=[Path("/tmp/rank1.pdb"), Path("/tmp/rank2.pdb")])
+    assert _resolve_output_expr(r, "pdb_paths[0]") == Path("/tmp/rank1.pdb")
+
+
+def test_resolve_output_expr_index_empty_list_returns_none():
+    assert _resolve_output_expr(_FakeResult(pdb_paths=[]), "pdb_paths[0]") is None
+
+
+def test_resolve_output_expr_missing_attr_returns_none():
+    assert _resolve_output_expr(_FakeResult(), "does_not_exist") is None
+
+
+# ---------------------------------------------------------------------------
+# _propagate_outputs — registry-driven (B2)
+# ---------------------------------------------------------------------------
+
+def test_propagate_outputs_colabfold_sets_pdb_and_a3m():
+    job = Job(job_id="j", inputs={}, plan=[])
+    result = _FakeResult(
+        pdb_paths=[Path("/tmp/rank1.pdb"), Path("/tmp/rank2.pdb")],
+        a3m_paths=[Path("/tmp/q.a3m")],
+    )
+    _propagate_outputs(job, "tool_colabfold", result)
+    assert job.inputs["data_pdb_complex"] == Path("/tmp/rank1.pdb")
+    assert job.inputs["data_pdb_file"] == Path("/tmp/rank1.pdb")
+    assert job.inputs["data_a3m_msa"] == [Path("/tmp/q.a3m")]
+
+
+def test_propagate_outputs_terminal_tool_sets_nothing():
+    # tool_extract_colabfold has no output_map → job.inputs unchanged
+    job = Job(job_id="j", inputs={}, plan=[])
+    _propagate_outputs(job, "tool_extract_colabfold", [object()])
+    assert job.inputs == {}
+
+
+def test_propagate_outputs_skips_absent_outputs():
+    # No pdb_paths/a3m_paths populated → nothing propagated, no crash on empty index
+    job = Job(job_id="j", inputs={}, plan=[])
+    _propagate_outputs(job, "tool_colabfold", _FakeResult())
+    assert job.inputs == {}
 
 
 def _metrics(model_id: str, mean_plddt: float, iptm: float, actifptm: float) -> list[ExtractedMetrics]:
