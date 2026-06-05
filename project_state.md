@@ -193,7 +193,11 @@ in `rosetta.py`. See module docstrings for the full pattern.
 - `emit_reports()` + `build_panel_report_inputs()`: close the prompt→report path. Groups done jobs by
   target — binding/binding_panel → one `outputs/{target_id}/panel_report.md`; monomer → per-job report.
   CLI exposes `--outputs-root` (default `outputs/`), so the CLI is one-call prompt→report.
-- Per-job loop: reads `done.flag` to skip already-completed jobs (resume support).
+- Per-job loop: reads `done.flag` to skip already-completed jobs (resume support). **(B5)** Each
+  step runs in its own try; a step with `optional=True` (the analysis steps) that raises is logged
+  and skipped without failing the Job. The old `_run_post_plan_analysis` hook is retired — structure
+  (`tool_freesasa`) and sequence (`tool_analyze_sequence`) analysis now run as optional plan steps,
+  and `build_report_inputs` / `build_panel_report_inputs` read them from those tool-id keys.
 - `_ensure_fasta()`: derives FASTA from `data_aa_sequence` if missing; handles `str` (monomer)
   and `list[str]` (multimer, ColabFold ':' convention).
 - `_bind_inputs()`: resolves `JobStep.input_bindings` to call kwargs. Reserved keys:
@@ -207,7 +211,8 @@ in `rosetta.py`. See module docstrings for the full pattern.
 
 ### Execution dataclasses — `preflight/jobs.py` [COMPLETE]
 - `Job`: unit of work with `inputs`, `plan`, `status`, `results`, `job_dir`, `metadata`.
-- `JobStep`: one tool invocation with `tool_id`, `kwargs`, `input_bindings`, `consumes`, `produces`.
+- `JobStep`: one tool invocation with `tool_id`, `kwargs`, `input_bindings`, `consumes`, `produces`,
+  and `optional` (**B5** — supplemental step; failure is logged and skipped, not fatal).
 - `BatchResult`: wraps all jobs with `n_done`, `n_failed`, `n_skipped` properties and
   `started_at` / `finished_at` timestamps.
 
@@ -229,7 +234,11 @@ in `rosetta.py`. See module docstrings for the full pattern.
   from the registry call contract (call_kwargs/bindings/has_input/has_output) with per-use overrides.
 - `build_roadmap(spec, feasibility)` → `Roadmap`: populates both human-readable `steps` list
   and machine-executable `jobs` list. Dispatches to `_binding_branch` or `_monomer_branch`. All
-  branches now build steps via `make_step` instead of hand-written `JobStep`s.
+  branches build steps via `make_step`. **(B5)** Every branch appends `_analysis_steps(...)` (always-on
+  optional `tool_freesasa` + `tool_analyze_sequence`; the sequence analyzer binds the peptide for
+  complexes via `data_peptide_sequence`, the target for monomers). `build_roadmap` then appends
+  `spec.requested_analyses` opt-ins via `_append_requested_analyses` (v1: sequence-based disorder /
+  CIDER; structure-based Rosetta hotspot chain is a follow-up sub-step).
 - `Job`, `JobStep`, `BatchResult` re-exported for callers.
 - `estimate_runtime()`: still placeholder constants (uncalibrated).
 
@@ -246,6 +255,9 @@ in `rosetta.py`. See module docstrings for the full pattern.
 - `tool_predict_panel` is the preferred entry for panel screening tasks.
 - `tool_metapredict` → `tools.metapredict.predict_disorder` and `tool_localcider` →
   `tools.analyze.analyze_cider` are also wired (non-null wrappers).
+- **(B5)** `tool_analyze_sequence` → `tools.analyze.analyze_sequence` registered for the always-on
+  sequence analysis step; new data types `data_peptide_sequence` and `data_sequence_features` added;
+  `tool_colabfold` carries `priority: 10` (preferred backend for `select_tool`).
 - **Part B / B1 — declarative call contract**: wrapped tools now carry optional `call_kwargs`
   (static defaults), `bindings` (wrapper kwarg → `data_*` id or reserved `_job_dir`/`_msa_cache`),
   and `output_map` (`data_*` id → `"."`/`attr`/`attr[0]` expression on the return value). This makes

@@ -210,15 +210,23 @@ def _run_one_job(job: Job, jobs_root: Path, abort_on_failure: bool) -> None:
     start = time.time()
     try:
         for i, step in enumerate(job.plan):
-            wrapper = resolve_wrapper(step.tool_id)
-            kwargs = _bind_inputs(step, job.inputs, job.job_dir)
-            _log(job, f"step {i + 1}/{len(job.plan)}: {step.tool_id}({_shorten(kwargs)})")
-            result = wrapper(**kwargs)
+            _log(job, f"step {i + 1}/{len(job.plan)}: {step.tool_id}"
+                      f"{' (optional)' if step.optional else ''}")
+            try:
+                wrapper = resolve_wrapper(step.tool_id)
+                kwargs = _bind_inputs(step, job.inputs, job.job_dir)
+                result = wrapper(**kwargs)
+            except Exception as step_err:
+                if step.optional:
+                    # Supplemental step (analysis): log and continue, do not fail the Job.
+                    _log(job, f"optional step {step.tool_id} skipped: "
+                              f"{type(step_err).__name__}: {step_err}")
+                    continue
+                raise
             job.results[step.tool_id] = result
             _propagate_outputs(job, step.tool_id, result)
         job.status = "done"
         (job.job_dir / "done.flag").touch()
-        _run_post_plan_analysis(job)
     except Exception as e:
         job.status = "failed"
         job.error = f"{type(e).__name__}: {e}"
@@ -319,31 +327,8 @@ def _resolve_output_expr(result: Any, expr: str) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Post-plan analysis (non-fatal supplemental step)
+# Report adapters
 # ---------------------------------------------------------------------------
-
-def _run_post_plan_analysis(job: Job) -> None:
-    """Call analyze_structure and analyze_sequence after a successful plan.
-
-    Results land in job.results["analyze_structure"] and job.results["analyze_sequence"]
-    so build_report_inputs can pull them into ReportInputs without re-running analysis.
-    Failures are logged and swallowed — analysis is supplemental, not load-bearing.
-    """
-    try:
-        from tools.analyze import analyze_sequence, analyze_structure
-        pdb_path = job.inputs.get("data_pdb_complex") or job.inputs.get("data_pdb_file")
-        if pdb_path is not None:
-            job.results["analyze_structure"] = analyze_structure(Path(pdb_path))
-
-        seqs = job.inputs.get("data_aa_sequence")
-        if seqs is not None:
-            if isinstance(seqs, str):
-                job.results["analyze_sequence"] = analyze_sequence(seqs)
-            elif isinstance(seqs, list):
-                job.results["analyze_sequence"] = [analyze_sequence(s) for s in seqs]
-    except Exception as e:
-        _log(job, f"post-plan analysis skipped: {type(e).__name__}: {e}")
-
 
 def build_report_inputs(
     job: Job,
@@ -356,10 +341,10 @@ def build_report_inputs(
     """Assemble a ReportInputs from a completed Job.
 
     Pulls ExtractedMetrics from tool_extract_colabfold, StructureFeatures from
-    analyze_structure, and SequenceFeatures from analyze_sequence — all of which
-    are stored in job.results by _run_post_plan_analysis after the plan succeeds.
-    For binding tasks (data_aa_sequence is a list), uses the peptide (index 1) as
-    the primary sequence; for monomer tasks uses index 0.
+    tool_freesasa, and SequenceFeatures from tool_analyze_sequence — all stored in
+    job.results by the registry-driven analysis steps in the plan (B5). For binding
+    jobs the sequence analyzer ran on the peptide (data_peptide_sequence); for
+    monomers on the single target.
     """
     from tools.report import ReportInputs
 
@@ -367,14 +352,8 @@ def build_report_inputs(
     if not isinstance(metrics, list):
         metrics = [metrics]
 
-    structure = job.results.get("analyze_structure")
-
-    sequences = job.results.get("analyze_sequence")
-    sequence = None
-    if isinstance(sequences, list) and sequences:
-        sequence = sequences[1] if len(sequences) > 1 else sequences[0]
-    elif sequences is not None:
-        sequence = sequences
+    structure = job.results.get("tool_freesasa")
+    sequence = job.results.get("tool_analyze_sequence")
 
     output_paths: dict[str, Path] = {}
     pdb = job.inputs.get("data_pdb_complex") or job.inputs.get("data_pdb_file")
@@ -410,8 +389,10 @@ def build_panel_report_inputs(
     """Aggregate a target's per-peptide Jobs into one ranked panel report input.
 
     For each done job, picks the best model (max composite_score) from
-    job.results["tool_extract_colabfold"] and pulls its structure/sequence analysis.
-    Jobs with no extracted metrics are skipped (logged upstream as failures).
+    job.results["tool_extract_colabfold"] and pulls its structure/sequence analysis
+    from job.results["tool_freesasa"] / ["tool_analyze_sequence"] (the registry-driven
+    analysis steps; the sequence analyzer ran on the peptide). Jobs with no extracted
+    metrics are skipped (logged upstream as failures).
     """
     from tools.extract import composite_score
     from tools.report import PanelEntry, PanelReportInputs
@@ -426,18 +407,11 @@ def build_panel_report_inputs(
             continue
         best = max(metrics, key=lambda m: composite_score(m, **score_kw))
 
-        seqs = job.results.get("analyze_sequence")
-        sequence = None
-        if isinstance(seqs, list) and seqs:
-            sequence = seqs[1] if len(seqs) > 1 else seqs[0]
-        elif seqs is not None:
-            sequence = seqs
-
         entries.append(PanelEntry(
             peptide_id=job.metadata.get("peptide_id", job.job_id),
             metrics=best,
-            structure=job.results.get("analyze_structure"),
-            sequence=sequence,
+            structure=job.results.get("tool_freesasa"),
+            sequence=job.results.get("tool_analyze_sequence"),
             label=job.metadata.get("peptide_id", job.job_id),
             job_dir=job.job_dir,
         ))

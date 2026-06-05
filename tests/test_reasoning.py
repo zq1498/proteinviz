@@ -187,17 +187,70 @@ def test_build_roadmap_emits_one_job_per_pair():
 # Job plan structure — tool_ids, kwargs, input_bindings
 # ---------------------------------------------------------------------------
 
-def test_binding_branch_plan_has_two_steps():
+def test_binding_branch_plan_has_predict_extract_and_analysis_steps():
+    # B5: predict + extract + always-on structure & sequence analysis.
     spec = TaskSpec(targets=["MKTAY"], peptides=["ACDEF"])
     rm = build_roadmap(spec, _empty_feasibility())
-    assert len(rm.jobs[0].plan) == 2
+    assert len(rm.jobs[0].plan) == 4
 
 
 def test_binding_branch_plan_tool_ids():
     spec = TaskSpec(targets=["MKTAY"], peptides=["ACDEF"])
     rm = build_roadmap(spec, _empty_feasibility())
     tool_ids = [s.tool_id for s in rm.jobs[0].plan]
-    assert tool_ids == ["tool_colabfold", "tool_extract_colabfold"]
+    assert tool_ids == [
+        "tool_colabfold", "tool_extract_colabfold",
+        "tool_freesasa", "tool_analyze_sequence",
+    ]
+
+
+def test_binding_branch_analysis_steps_are_optional():
+    spec = TaskSpec(targets=["MKTAY"], peptides=["ACDEF"])
+    rm = build_roadmap(spec, _empty_feasibility())
+    plan = rm.jobs[0].plan
+    # predict + extract are load-bearing; analysis steps are supplemental
+    assert [s.optional for s in plan] == [False, False, True, True]
+
+
+def test_binding_branch_sequence_analysis_binds_peptide():
+    spec = TaskSpec(targets=["MKTAY"], peptides=["ACDEF"])
+    rm = build_roadmap(spec, _empty_feasibility())
+    seq_step = next(s for s in rm.jobs[0].plan if s.tool_id == "tool_analyze_sequence")
+    assert seq_step.input_bindings["seq"] == "data_peptide_sequence"
+    assert rm.jobs[0].inputs["data_peptide_sequence"] == "ACDEF"
+
+
+def test_monomer_branch_sequence_analysis_binds_target_sequence():
+    spec = TaskSpec(targets=["MKTAY"])
+    rm = build_roadmap(spec, _empty_feasibility())
+    seq_step = next(s for s in rm.jobs[0].plan if s.tool_id == "tool_analyze_sequence")
+    assert seq_step.input_bindings["seq"] == "data_aa_sequence"
+
+
+def test_requested_analyses_appended_as_optional_steps():
+    spec = TaskSpec(
+        targets=["MKTAY"], peptides=["ACDEF"],
+        requested_analyses=["tool_metapredict", "tool_localcider"],
+    )
+    rm = build_roadmap(spec, _empty_feasibility())
+    plan = rm.jobs[0].plan
+    ids = [s.tool_id for s in plan]
+    assert "tool_metapredict" in ids and "tool_localcider" in ids
+    for tid in ("tool_metapredict", "tool_localcider"):
+        step = next(s for s in plan if s.tool_id == tid)
+        assert step.optional is True
+        assert step.input_bindings["seq"] == "data_peptide_sequence"
+
+
+def test_requested_analyses_unknown_id_is_skipped():
+    spec = TaskSpec(
+        targets=["MKTAY"], peptides=["ACDEF"],
+        requested_analyses=["tool_does_not_exist"],
+    )
+    rm = build_roadmap(spec, _empty_feasibility())
+    ids = [s.tool_id for s in rm.jobs[0].plan]
+    assert "tool_does_not_exist" not in ids
+    assert len(rm.jobs[0].plan) == 4  # only the always-on steps, nothing appended
 
 
 def test_binding_branch_calc_extra_ptm_true():

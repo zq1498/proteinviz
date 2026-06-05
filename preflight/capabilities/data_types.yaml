@@ -14,6 +14,11 @@
   definition: One or more sequences in FASTA format on disk.
   parent: null
 
+- id: data_peptide_sequence
+  label: Peptide amino acid sequence
+  definition: The peptide (binder) chain of a complex as a single sequence string; the binding/panel branches set this so sequence analysis runs on the peptide rather than the packed [target, peptide] list.
+  parent: data_aa_sequence
+
 - id: data_a3m_msa
   label: A3M multiple sequence alignment
   definition: Aligned sequence file in ColabFold-style A3M format, optionally paired across chains.
@@ -88,6 +93,11 @@
 - id: data_disorder_summary
   label: Disorder summary statistics
   definition: Aggregate disorder content (% disordered, IDR segment count, longest IDR).
+  parent: null
+
+- id: data_sequence_features
+  label: Sequence biophysical features
+  definition: Composite SequenceFeatures record from analyze_sequence — MW, pI, aromatic fraction, cysteine positions, and heuristic flags (IDR/hydrophobic/PPII/length).
   parent: null
 
 - id: data_kappa

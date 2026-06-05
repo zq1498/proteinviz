@@ -40,12 +40,18 @@ class JobStep:
     for the named tool. They are advisory — used to sanity-check the chain
     (step N produces what step N+1 consumes) and to drive the MSA cache
     pre-computation. The orchestrator does not enforce them at call time.
+
+    `optional` marks a supplemental step (e.g. the analysis steps): if it raises,
+    the orchestrator logs the failure and continues instead of failing the whole
+    Job. This preserves the "analysis is supplemental, never load-bearing"
+    guarantee while still routing analysis through the registry/plan.
     """
     tool_id: str
     kwargs: dict[str, Any] = field(default_factory=dict)
     input_bindings: dict[str, str] = field(default_factory=dict)
     consumes: list[str] = field(default_factory=list)
     produces: list[str] = field(default_factory=list)
+    optional: bool = False
 
 
 @dataclass

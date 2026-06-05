@@ -158,6 +158,25 @@
 
 # ---- Sequence biophysics ----
 
+- id: tool_analyze_sequence
+  label: Sequence feature analyzer
+  tier: 1
+  definition: >
+    Biophysical sequence descriptors and heuristic flags (MW, pI, aromatic fraction,
+    cysteine positions; IDR/hydrophobic/PPII/length flags) via Biopython ProteinAnalysis.
+    Always-on analysis step in binding/monomer plans.
+  subtask:
+    - subtask_structural_analysis
+  has_input:
+    - data_aa_sequence
+  has_output:
+    - data_sequence_features
+  wrapper: tools.analyze.analyze_sequence
+  invocation: python_api
+  bindings:               # monomer default; binding/panel branches override seq -> data_peptide_sequence
+    seq: data_aa_sequence
+  # Terminal: SequenceFeatures is read from job.results["tool_analyze_sequence"] by the report.
+
 - id: tool_localcider
   label: localCIDER
   tier: 1

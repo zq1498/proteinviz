@@ -169,6 +169,60 @@ def test_propagate_outputs_skips_absent_outputs():
     assert job.inputs == {}
 
 
+# ---------------------------------------------------------------------------
+# _run_one_job — optional (supplemental) step failure isolation (B5)
+# ---------------------------------------------------------------------------
+
+from preflight.jobs import JobStep
+from tools.batch import _run_one_job
+
+
+def test_optional_step_failure_does_not_fail_job(tmp_path, monkeypatch):
+    import tools.batch as batch
+
+    def fake_resolve(tool_id):
+        if tool_id == "tool_extract_colabfold":
+            return lambda **kw: ["ok"]
+        if tool_id == "tool_freesasa":
+            def boom(**kw):
+                raise RuntimeError("freesasa exploded")
+            return boom
+        raise AssertionError(tool_id)
+
+    monkeypatch.setattr(batch, "resolve_wrapper", fake_resolve)
+    job = Job(
+        job_id="j_opt",
+        inputs={"data_aa_sequence": "MKTAY"},
+        plan=[
+            JobStep(tool_id="tool_extract_colabfold", input_bindings={"out_dir": "_job_dir"}),
+            JobStep(tool_id="tool_freesasa", optional=True),
+        ],
+    )
+    _run_one_job(job, tmp_path, abort_on_failure=False)
+    assert job.status == "done"
+    assert job.results["tool_extract_colabfold"] == ["ok"]
+    assert "tool_freesasa" not in job.results  # failed optional step recorded nothing
+
+
+def test_required_step_failure_fails_job(tmp_path, monkeypatch):
+    import tools.batch as batch
+
+    def fake_resolve(tool_id):
+        def boom(**kw):
+            raise RuntimeError("extract exploded")
+        return boom
+
+    monkeypatch.setattr(batch, "resolve_wrapper", fake_resolve)
+    job = Job(
+        job_id="j_req",
+        inputs={"data_aa_sequence": "MKTAY"},
+        plan=[JobStep(tool_id="tool_extract_colabfold", input_bindings={"out_dir": "_job_dir"})],
+    )
+    _run_one_job(job, tmp_path, abort_on_failure=False)
+    assert job.status == "failed"
+    assert "extract exploded" in job.error
+
+
 def _metrics(model_id: str, mean_plddt: float, iptm: float, actifptm: float) -> list[ExtractedMetrics]:
     return [ExtractedMetrics(
         model_id=model_id,
