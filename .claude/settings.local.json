@@ -10,7 +10,9 @@
       "WebFetch(domain:www.uniprot.org)",
       "Bash(python -)",
       "Bash(conda run *)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
     ]
   }
 }

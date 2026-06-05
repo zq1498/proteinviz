@@ -207,10 +207,13 @@ py3Dmol HTML rendering (browser-based, CDN-loaded). PyMOL PNG rendering planned 
 - `write_html(pdb_path, out_path, color_by="plddt")` — **implemented**: writes `render_py3dmol` output to disk, creates parent dirs.
 - `write_complex_html(pdb_path, out_path, peptide_chain="C")` — **implemented**: writes `render_complex_py3dmol` output to disk.
 - `write_html_from_metrics(metrics, out_dir, peptide_chain=None)` — **implemented**: pipeline integration point; takes an `ExtractedMetrics`, derives filename from `metrics.model_id`, calls the complex viewer if `peptide_chain` is given, else the standard viewer.
+- `render_interface_surface(pdb_path, interface_residues=None, chains_to_show=None, peptide_chain="C")` — **implemented**: self-contained HTML showing the cartoon coloured by pLDDT + a Gaussian surface with interface residues highlighted. If `interface_residues` is None it computes them — via `_get_peptide_interface_residues` when a `peptide_chain` is present, otherwise from `analyze_structure().interface_residues`. `chains_to_show` filters which chains get a bright surface (others render as desaturated grey context).
+- `write_interface_surface_html(pdb_path, out_path, interface_residues=None, chains_to_show=None, peptide_chain="C")` — **implemented**: writes `render_interface_surface` output to disk.
+- `_get_peptide_interface_residues(pdb_path, peptide_chain, interface_cutoff_a=5.0)` — **implemented**: interface residues (chain_id, resnum) within the cutoff of the peptide chain.
 - `render_pymol(pdb_path, out_png, highlight_chains=None)` — phase 2 stub; raises `NotImplementedError`.
 - `_escape_pdb`, `_plddt_legend`, `_html_page`, `_html_page_raw` — shared helpers.
 
-`render_interface` (former stub with a type error — `chain_b: Path` instead of `str`) has been removed; its intent is covered by `render_complex_py3dmol`.
+The former `render_interface` stub (type error: `chain_b: Path` instead of `str`) was replaced by the working `render_interface_surface` / `write_interface_surface_html` pair above.
 
 ### [tools/report.py](tools/report.py)
 
@@ -403,7 +406,7 @@ Conventions: stable IDs, forward relations only, polyhierarchy permitted. See [p
 | `tools/metapredict_worker.py` | `_predict_disorder` validated end-to-end (Python 3.11 / metapredict V3.0.1); sys.path guard prevents tools/metapredict.py shadow-import |
 | `tools/rosetta.py` | `score_interface`, `per_residue_energies`, `alanine_scan` implemented (subprocess bridge to proteinviz_pyrosetta) |
 | `tools/pyrosetta_worker.py` | `_score_interface`, `_per_residue_energies`, `_alanine_scan` implemented (runs under Python 3.14 / PyRosetta 2026.19) |
-| `tools/visualize.py` | `render_py3dmol`, `render_complex_py3dmol`, `write_html`, `write_complex_html`, `write_html_from_metrics` implemented; `render_pymol` phase 2 stub; `render_interface` removed |
+| `tools/visualize.py` | `render_py3dmol`, `render_complex_py3dmol`, `render_interface_surface`, `write_html`, `write_complex_html`, `write_interface_surface_html`, `write_html_from_metrics` implemented; `render_pymol` phase 2 stub |
 | `tools/report.py` | Implemented; per-complex `render_report` (7-section) + aggregated `render_panel_report` (`PanelEntry`/`PanelReportInputs`, one row per peptide, panel-wide actifpTM warning); shared `_binding_tier`/`_fold_tier`/`_actifptm_warning` helpers |
 | `preflight/reasoning.py` | Registry loader + lookup helpers + validate_inputs + suggest_analyses + build_roadmap implemented; `_panel_branch` (extraction-only Jobs for N>1 panels) + `_single_pair_branch` + monomer branch; estimate_runtime placeholder constants |
 | `tools/batch.py` | Implemented: panel pre-processing (`_run_panel_predictions` — blocking predict_panel + done.flag resume per target); per-job orchestrator loop, FASTA derivation, output propagation, failure isolation, per-job logging, CLI entrypoint; `emit_reports` + `build_panel_report_inputs` + `run_batch(outputs_root=...)` + CLI `--outputs-root` close the prompt→report path (aggregated panel report per target, per-job report for monomers) |

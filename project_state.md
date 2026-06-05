@@ -159,8 +159,10 @@ in `rosetta.py`. See module docstrings for the full pattern.
   Three color modes: `"plddt"` (RCSB B-factor gradient), `"chain"`, `"spectrum"`.
 - `render_complex_py3dmol(pdb_path, peptide_chain)` → complex viewer that colors target chains by
   pLDDT gradient and highlights the designated peptide chain (default `"C"`) in a distinct color.
-- `write_html`, `write_complex_html`: write respective viewers to disk.
-- `write_visualization_html(metrics, out_path, peptide_chain)`: dispatcher — uses complex viewer
+- `render_interface_surface(pdb_path, interface_residues, chains_to_show, peptide_chain)` → HTML with
+  a pLDDT-coloured cartoon + Gaussian surface and interface residues highlighted (auto-computed if not
+  supplied). `write_html`, `write_complex_html`, `write_interface_surface_html`: write viewers to disk.
+- `write_html_from_metrics(metrics, out_dir, peptide_chain)`: dispatcher — uses complex viewer
   when `peptide_chain` is given, plain viewer otherwise.
 - pLDDT legend included in the HTML when `color_by="plddt"`.
 
