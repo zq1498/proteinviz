@@ -31,6 +31,11 @@
   definition: Multi-chain PDB representing a peptide-protein or protein-protein complex.
   parent: data_pdb_file
 
+- id: data_colabfold_out_dir
+  label: ColabFold output directory
+  definition: Directory of downloaded ColabFold results (ranked PDBs + score JSONs) for one complex; the input the extractor parses.
+  parent: null
+
 # ---- Per-residue arrays (prediction confidence and properties) ----
 
 - id: data_plddt_per_residue

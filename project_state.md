@@ -233,6 +233,14 @@ in `rosetta.py`. See module docstrings for the full pattern.
 - `tool_colabfold_search` and `tool_dcc_msa` are marked `deprecated: true`; MSA search now
   lives inside `predict.sh` (SEARCH_ONLY=1), not as a standalone callable.
 - `tool_predict_panel` is the preferred entry for panel screening tasks.
+- **Part B / B1 — declarative call contract**: wrapped tools now carry optional `call_kwargs`
+  (static defaults), `bindings` (wrapper kwarg → `data_*` id or reserved `_job_dir`/`_msa_cache`),
+  and `output_map` (`data_*` id → `"."`/`attr`/`attr[0]` expression on the return value). This makes
+  the registry the source of truth for *how to call and chain* a tool, not just what data flows.
+  `tool_colabfold` maps its PDB + A3M outputs; `tool_rosetta_alanine_scan` maps its result for the
+  confidence-filter step; analysis tools are terminal (read from `job.results[tool_id]`). Added
+  `data_colabfold_out_dir` to `data_types.yaml` (was an unregistered `Job.inputs` key). Integrity
+  enforced by new `tests/test_registry_integrity.py` cases.
 
 ### MSA utilities — `tools/msa.py` [REFACTORED]
 - `run_msa()`: deprecated — raises `FileNotFoundError` immediately. MSA search is now

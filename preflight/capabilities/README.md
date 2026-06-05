@@ -6,7 +6,17 @@ Three orthogonal YAML files form the machine-queryable capability layer that the
 |---|---|---|
 | `subtasks.yaml` | Topic | High-level task categories (folding, binding, disorder, etc.) and their parent hierarchy. |
 | `data_types.yaml` | Data | Things that flow between tools — sequences, PDBs, score arrays, summary metrics. |
-| `tools.yaml` | Tool registry (annotated with EDAM terms) | Each callable tool, with `subtask` (Topic), `has_input` / `has_output` (Data), `wrapper` (Python entrypoint), `invocation` style. |
+| `tools.yaml` | Tool registry (annotated with EDAM terms) | Each callable tool, with `subtask` (Topic), `has_input` / `has_output` (Data), `wrapper` (Python entrypoint), `invocation` style, and an optional declarative *call contract* (`call_kwargs`, `bindings`, `output_map`). |
+
+## Call contract (wrapped tools)
+
+Beyond *what data flows*, a wrapped tool may declare *how it is called and chained*. These three optional fields let the orchestrator build and chain steps from YAML instead of hand-written Python (see the `make_step` builder and registry-driven `_propagate_outputs`):
+
+- `call_kwargs` — static default kwargs (e.g. `{fast: false}`). A roadmap branch overrides them per-step.
+- `bindings` — wrapper kwarg name → a `data_*` id (resolved from `Job.inputs` at call time) or a reserved token (`_job_dir`, `_msa_cache`). Branches may pass per-use `binding_overrides`.
+- `output_map` — `data_*` id → attribute expression on the return value, exposing a step's output to later steps' bindings. Exactly three expression forms: `"."` (whole result), `attr`, `attr[0]`. Omit for tools whose result is read directly from `job.results[tool_id]` (terminal). Every key must be in the tool's `has_output`.
+
+Tools that are not dispatched as JobSteps (e.g. `tool_predict_panel`, run by the panel pre-processor) or whose inputs the registry can't express (e.g. `tool_tmtools`, two PDBs) carry no call contract.
 
 ## Conventions
 
