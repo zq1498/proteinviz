@@ -41,6 +41,7 @@ def run_batch(
     *,
     jobs_root: Path = Path("jobs"),
     abort_on_failure: bool = False,
+    outputs_root: Path | None = None,
 ) -> BatchResult:
     """Walk every Job in `roadmap.jobs` through its plan.
 
@@ -52,6 +53,9 @@ def run_batch(
         abort_on_failure: if True, re-raise the first job's exception instead
             of marking failed and continuing. Default False per project policy
             ("flag rather than omit").
+        outputs_root: if set, emit user-facing reports under this directory after
+            the run (one aggregated panel report per target; per-job reports for
+            monomers). If None, run_batch stays side-effect-free apart from jobs_root.
 
     Returns:
         BatchResult with all jobs marked done / skipped / failed.
@@ -84,10 +88,18 @@ def run_batch(
         flush=True,
     )
 
-    return BatchResult(
+    result = BatchResult(
         spec=spec, roadmap=roadmap, jobs=jobs,
         started_at=started, finished_at=finished,
     )
+
+    if outputs_root is not None:
+        paths = emit_reports(
+            result, outputs_root=outputs_root, task_description=spec.objective
+        )
+        print(f"[batch] wrote {len(paths)} report(s) under {outputs_root}/", flush=True)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +373,103 @@ def build_report_inputs(
     )
 
 
+def build_panel_report_inputs(
+    target_jobs: list[Job],
+    target_id: str,
+    task_description: str,
+    *,
+    methods: dict[str, Any] | None = None,
+    flags: list[str] | None = None,
+    follow_up: list[str] | None = None,
+    weights: dict[str, float] | None = None,
+) -> "PanelReportInputs":
+    """Aggregate a target's per-peptide Jobs into one ranked panel report input.
+
+    For each done job, picks the best model (max composite_score) from
+    job.results["tool_extract_colabfold"] and pulls its structure/sequence analysis.
+    Jobs with no extracted metrics are skipped (logged upstream as failures).
+    """
+    from tools.extract import composite_score
+    from tools.report import PanelEntry, PanelReportInputs
+
+    score_kw: dict = {"weights": weights} if weights else {}
+    entries: list[PanelEntry] = []
+    for job in target_jobs:
+        metrics = job.results.get("tool_extract_colabfold") or []
+        if not isinstance(metrics, list):
+            metrics = [metrics]
+        if not metrics:
+            continue
+        best = max(metrics, key=lambda m: composite_score(m, **score_kw))
+
+        seqs = job.results.get("analyze_sequence")
+        sequence = None
+        if isinstance(seqs, list) and seqs:
+            sequence = seqs[1] if len(seqs) > 1 else seqs[0]
+        elif seqs is not None:
+            sequence = seqs
+
+        entries.append(PanelEntry(
+            peptide_id=job.metadata.get("peptide_id", job.job_id),
+            metrics=best,
+            structure=job.results.get("analyze_structure"),
+            sequence=sequence,
+            label=job.metadata.get("peptide_id", job.job_id),
+            job_dir=job.job_dir,
+        ))
+
+    return PanelReportInputs(
+        target_id=target_id,
+        task_description=task_description,
+        complexes=entries,
+        methods=methods or {},
+        flags=flags or [],
+        follow_up=follow_up or [],
+        weights=weights,
+    )
+
+
+def emit_reports(
+    batch_result: BatchResult,
+    *,
+    outputs_root: Path,
+    task_description: str,
+    methods: dict[str, Any] | None = None,
+    weights: dict[str, float] | None = None,
+) -> list[Path]:
+    """Write user-facing reports for a completed run under outputs_root/.
+
+    Binding / binding_panel jobs are grouped by target into one aggregated panel
+    report (outputs_root/{target_id}/panel_report.md). Monomer jobs get a per-job
+    report (outputs_root/{job_id}/report.md). Returns the paths written.
+    """
+    from collections import defaultdict
+    from tools.report import write_panel_report, write_report
+
+    done = [j for j in batch_result.jobs if j.status == "done"]
+    by_target: dict[str, list[Job]] = defaultdict(list)
+    for job in done:
+        by_target[job.metadata.get("target_id", job.job_id)].append(job)
+
+    written: list[Path] = []
+    for target_id, tjobs in sorted(by_target.items()):
+        kinds = {j.metadata.get("kind") for j in tjobs}
+        if kinds & {"binding", "binding_panel"}:
+            panel_inputs = build_panel_report_inputs(
+                tjobs, target_id, task_description, methods=methods, weights=weights
+            )
+            if panel_inputs.complexes:
+                out = outputs_root / target_id / "panel_report.md"
+                written.append(write_panel_report(panel_inputs, out))
+        else:  # monomer / other single-structure tasks
+            for job in tjobs:
+                ri = build_report_inputs(job, task_description, methods=methods, weights=weights)
+                if ri.metrics:
+                    out = outputs_root / job.job_id / "report.md"
+                    written.append(write_report(ri, out))
+    return written
+
+
 # ---------------------------------------------------------------------------
 # Persistence + logging
 # ---------------------------------------------------------------------------
@@ -459,6 +568,9 @@ def main() -> None:
                    help="Free-text objective shown in the report.")
     p.add_argument("--jobs-root", type=Path, default=Path("jobs"),
                    help="Parent directory for per-job working dirs.")
+    p.add_argument("--outputs-root", type=Path, default=Path("outputs"),
+                   help="Directory for user-facing reports (panel/per-job). "
+                        "Pass '' to skip report emission.")
     p.add_argument("--abort-on-failure", action="store_true",
                    help="Stop the batch on the first failure instead of continuing.")
     args = p.parse_args()
@@ -479,8 +591,10 @@ def main() -> None:
         for d in roadmap.decision_points:
             print(f"  ? {d}")
 
+    outputs_root = args.outputs_root if str(args.outputs_root) else None
     result = run_batch(spec, roadmap, jobs_root=args.jobs_root,
-                       abort_on_failure=args.abort_on_failure)
+                       abort_on_failure=args.abort_on_failure,
+                       outputs_root=outputs_root)
     print(f"[batch] result: done={result.n_done} failed={result.n_failed} skipped={result.n_skipped}")
 
 

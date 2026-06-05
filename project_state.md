@@ -172,17 +172,25 @@ in `rosetta.py`. See module docstrings for the full pattern.
 - TM-score and Cα RMSD via `tmtools`. `ComparisonResult` dataclass. CLI available.
 
 ### Report rendering — `tools/report.py` [COMPLETE]
-- `render_report(inputs)`: 6-section markdown report; actifpTM automatically demoted in flags
-  for 3+ chain complexes with a plain-language explanation; per-chain pLDDT breakdown in table.
-- `executive_summary()`: adapts language to monomer (pTM tiers) vs. complex (composite tiers).
-- `write_report(inputs, out_path)`.
+- `render_report(inputs)`: 7-section per-complex markdown report; actifpTM automatically demoted
+  in flags for 3+ chain complexes with a plain-language explanation; per-chain pLDDT in table.
+- `render_panel_report(inp)` + `PanelEntry` / `PanelReportInputs`: aggregated report ranking all
+  peptides against one target — §3 Ranked Binders is one row per complex; the actifpTM warning is
+  emitted once for the whole panel. This is the deliverable for screening tasks.
+- `executive_summary()` / `_panel_executive_summary()`: adapt language to monomer (pTM tiers) vs.
+  complex (composite tiers); share `_binding_tier` / `_fold_tier` / `_actifptm_warning`.
+- `write_report(inputs, out_path)`, `write_panel_report(inp, out_path)`.
 - `ReportInputs` dataclass carries optional `weights` dict passed through to `composite_score`,
   plus optional `structure: StructureFeatures`, `sequence: SequenceFeatures`, and
   `disorder: list[float]` fields — all consumed when present (SASA, disulfides, disorder scores
   appear in the Flagged Observations section).
 
 ### Orchestrator — `tools/batch.py` [COMPLETE]
-- `run_batch(spec, roadmap, jobs_root, abort_on_failure)` → `BatchResult`.
+- `run_batch(spec, roadmap, jobs_root, abort_on_failure, outputs_root=None)` → `BatchResult`. When
+  `outputs_root` is set, calls `emit_reports` after the loop (default None = no side effects beyond jobs_root).
+- `emit_reports()` + `build_panel_report_inputs()`: close the prompt→report path. Groups done jobs by
+  target — binding/binding_panel → one `outputs/{target_id}/panel_report.md`; monomer → per-job report.
+  CLI exposes `--outputs-root` (default `outputs/`), so the CLI is one-call prompt→report.
 - Per-job loop: reads `done.flag` to skip already-completed jobs (resume support).
 - `_ensure_fasta()`: derives FASTA from `data_aa_sequence` if missing; handles `str` (monomer)
   and `list[str]` (multimer, ColabFold ':' convention).
@@ -298,3 +306,4 @@ in `rosetta.py`. See module docstrings for the full pattern.
 [2026-05-11] — Added PyRosetta subprocess bridge: `tools/rosetta.py` (caller, proteinviz env, Python 3.12) + `tools/pyrosetta_worker.py` (worker, proteinviz_pyrosetta env, Python 3.14). Three functions implemented: `score_interface` (InterfaceAnalyzerMover, dG_separated), `per_residue_energies` (REF2015 per-residue), `alanine_scan` (single-point hot-spot scan). ARCHITECTURE.md and project_state.md updated in same change.
 [2026-05-13b] — Registry housekeeping: wired tool_freesasa → analyze_structure; added tier: to all entries (user set Boltz-1/DSSP/Biotite/NetSurfP-3/PDBePISA/FoldX → tier 3); deprecated tool_anchor2 (REST defunct, AIUPred covers it); added tool_rosetta_* entries (score_interface, per_residue_energies, alanine_scan, confidence_filter_scan) wired to tools.rosetta.*; added data_interface_score, data_per_residue_energy, data_ala_scan_result, data_confident_hotspot_list to data_types.yaml.
 [2026-05-13] — Reconciled project_state.md with actual code: (1) report.py now consumes StructureFeatures/SequenceFeatures/disorder — removed from stubs and open questions; (2) batch.py wires predict_panel via _run_panel_predictions for binding_panel jobs — removed from open questions; (3) tool_colabfold_search / tool_dcc_msa marked deprecated: true in tools.yaml — updated registry section and stubs table; (4) visualize.py gained render_complex_py3dmol and write_complex_html — description updated; (5) test_visualize.py and validate_msa_caching.py added to test suite; (6) Next Priorities pruned to 4 remaining items.
+[2026-06-05] — Part A (report wiring) complete: closed the prompt→report break. Added aggregated panel report to tools/report.py (`PanelEntry`/`PanelReportInputs`/`render_panel_report`/`write_panel_report`; one row per peptide ranked by composite; panel-wide actifpTM warning) with shared `_binding_tier`/`_fold_tier`/`_actifptm_warning` helpers. Added `build_panel_report_inputs` + `emit_reports` to tools/batch.py and `run_batch(outputs_root=...)` + CLI `--outputs-root` so a run emits reports automatically. Baseline hygiene: added pytest.ini (testpaths=tests, fixes jobs/ mis-collection); refreshed stale test_report.py (7-section) and test_reasoning.py (panel routing) expectations; xfail'd estimate_runtime formula tests until calibrated. +9 tests; suite 126 passed / 2 skipped / 2 xfailed. Part B (orchestrator+registry hybrid refactor) deferred to a fresh session — plan in PART_B_REFACTOR_PLAN.md.

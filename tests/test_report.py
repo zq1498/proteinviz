@@ -9,16 +9,24 @@ from __future__ import annotations
 from pathlib import Path
 
 from tools.extract import DEFAULT_SCORE_WEIGHTS, ExtractedMetrics
-from tools.report import ReportInputs, executive_summary, render_report
+from tools.report import (
+    PanelEntry,
+    PanelReportInputs,
+    ReportInputs,
+    executive_summary,
+    render_panel_report,
+    render_report,
+)
 
 
 SECTION_HEADERS = [
     "## 1. Executive Summary",
     "## 2. Methods",
     "## 3. Per-Complex Results",
-    "## 4. Flagged Observations",
-    "## 5. Suggested Follow-Up",
-    "## 6. Raw Output Locations",
+    "## 4. Structural Analysis",
+    "## 5. Flagged Observations",
+    "## 6. Suggested Follow-Up",
+    "## 7. Raw Output Locations",
 ]
 
 
@@ -38,7 +46,7 @@ def _metric(model_id: str, mean_plddt: float, actifptm: float | None, iptm: floa
     )
 
 
-def test_render_report_has_all_six_sections_when_empty():
+def test_render_report_has_all_sections_when_empty():
     inputs = ReportInputs(job_id="empty", task_description="nothing to do")
     report = render_report(inputs)
     for header in SECTION_HEADERS:
@@ -143,7 +151,7 @@ def test_render_report_flags_actifptm_for_three_chain_complex():
     m.per_chain_plddt = {"A": 76.0, "B": 75.5, "C": 25.0}
     inputs = ReportInputs(job_id="j", task_description="t", metrics=[m])
     report = render_report(inputs)
-    flags_section = report.split("## 4. Flagged Observations")[1]
+    flags_section = report.split("## 5. Flagged Observations")[1]
     assert "actifpTM unreliable" in flags_section
     assert "3-chain" in flags_section
     assert "chain C" in flags_section
@@ -154,7 +162,7 @@ def test_render_report_no_actifptm_flag_for_two_chain_complex():
     m.per_chain_plddt = {"A": 80.0, "B": 40.0}
     inputs = ReportInputs(job_id="j", task_description="t", metrics=[m])
     report = render_report(inputs)
-    flags_section = report.split("## 4. Flagged Observations")[1]
+    flags_section = report.split("## 5. Flagged Observations")[1]
     assert "actifpTM unreliable" not in flags_section
 
 
@@ -164,3 +172,66 @@ def test_executive_summary_notes_actifptm_exclusion_for_three_chain():
     summary = executive_summary([m], flags=[])
     assert "excluded from composite" in summary
     assert "3-chain" in summary
+
+
+# ---------------------------------------------------------------------------
+# Aggregated panel report
+# ---------------------------------------------------------------------------
+
+def _entry(peptide_id: str, mean_plddt: float, actifptm, iptm) -> PanelEntry:
+    return PanelEntry(
+        peptide_id=peptide_id,
+        metrics=_metric(peptide_id, mean_plddt=mean_plddt, actifptm=actifptm, iptm=iptm),
+        label=peptide_id,
+    )
+
+
+def test_render_panel_report_one_row_per_peptide():
+    inp = PanelReportInputs(
+        target_id="VEGF165",
+        task_description="panel",
+        complexes=[
+            _entry("p0", 80.0, 0.95, 0.90),
+            _entry("p1", 60.0, 0.50, 0.45),
+            _entry("p2", 70.0, 0.70, 0.65),
+        ],
+    )
+    report = render_panel_report(inp)
+    table = report.split("## 3. Ranked Binders")[1].split("## 4.")[0]
+    data_rows = [ln for ln in table.splitlines() if ln.startswith("| ") and "Peptide" not in ln and "---" not in ln]
+    assert len(data_rows) == 3
+    for pid in ("p0", "p1", "p2"):
+        assert pid in table
+
+
+def test_render_panel_report_ranks_by_composite_descending():
+    inp = PanelReportInputs(
+        target_id="t",
+        task_description="panel",
+        complexes=[
+            _entry("low", 50.0, 0.30, 0.25),
+            _entry("high", 90.0, 0.95, 0.92),
+            _entry("mid", 70.0, 0.65, 0.60),
+        ],
+    )
+    report = render_panel_report(inp)
+    assert report.index("| 1 | high") < report.index("| 2 | mid") < report.index("| 3 | low")
+    assert "Top candidate **high**" in report
+
+
+def test_render_panel_report_actifptm_warning_appears_once():
+    entries = []
+    for pid in ("p0", "p1"):
+        e = _entry(pid, 74.0, 0.97, 0.55)
+        e.metrics.per_chain_plddt = {"A": 76.0, "B": 75.5, "C": 25.0}
+        entries.append(e)
+    inp = PanelReportInputs(target_id="t", task_description="panel", complexes=entries)
+    report = render_panel_report(inp)
+    assert report.count("actifpTM unreliable") == 1
+    assert "applies to every 3+ chain complex" in report
+
+
+def test_render_panel_report_empty_is_graceful():
+    inp = PanelReportInputs(target_id="t", task_description="panel", complexes=[])
+    report = render_panel_report(inp)
+    assert "No complexes were predicted" in report

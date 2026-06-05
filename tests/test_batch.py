@@ -90,3 +90,107 @@ def test_ensure_fasta_rejects_invalid_sequence_type(tmp_path: Path):
     inputs = {"data_aa_sequence": 12345}
     with pytest.raises(TypeError, match="str or list"):
         _ensure_fasta(inputs, tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# emit_reports — report emission grouped by target
+# ---------------------------------------------------------------------------
+
+from preflight.jobs import BatchResult, Job
+from tools.batch import build_panel_report_inputs, emit_reports
+from tools.extract import ExtractedMetrics
+
+
+def _metrics(model_id: str, mean_plddt: float, iptm: float, actifptm: float) -> list[ExtractedMetrics]:
+    return [ExtractedMetrics(
+        model_id=model_id,
+        backend="colabfold",
+        pdb_path=Path(f"/tmp/{model_id}.pdb"),
+        mean_plddt=mean_plddt,
+        min_plddt=mean_plddt - 10,
+        max_plddt=mean_plddt + 10,
+        per_residue_plddt=[mean_plddt],
+        pae=None,
+        iptm=iptm,
+        actifptm=actifptm,
+        ranking_score=iptm,
+    )]
+
+
+def _done_job(job_id, target_id, kind, *, peptide_id=None, mean_plddt=80.0, iptm=0.9, actifptm=0.9, job_dir=None):
+    meta = {"target_id": target_id, "kind": kind}
+    if peptide_id is not None:
+        meta["peptide_id"] = peptide_id
+    j = Job(
+        job_id=job_id,
+        inputs={"data_aa_sequence": ["TARGET", "PEPTIDE"] if peptide_id else "TARGET"},
+        plan=[],
+        status="done",
+        results={"tool_extract_colabfold": _metrics(job_id, mean_plddt, iptm, actifptm)},
+        metadata=meta,
+    )
+    j.job_dir = job_dir
+    return j
+
+
+def _batch(jobs):
+    return BatchResult(spec=None, roadmap=None, jobs=jobs)
+
+
+def test_emit_reports_writes_one_panel_report_per_target(tmp_path: Path):
+    jobs = [
+        _done_job("t0__p0", "target_0", "binding_panel", peptide_id="peptide_0", iptm=0.9),
+        _done_job("t0__p1", "target_0", "binding_panel", peptide_id="peptide_1", iptm=0.4),
+    ]
+    written = emit_reports(_batch(jobs), outputs_root=tmp_path, task_description="screen")
+    panel = tmp_path / "target_0" / "panel_report.md"
+    assert panel in written
+    assert panel.exists()
+    text = panel.read_text()
+    assert "peptide_0" in text and "peptide_1" in text
+    # higher-ipTM peptide ranks first
+    assert text.index("| 1 | peptide_0") < text.index("| 2 | peptide_1")
+
+
+def test_emit_reports_groups_targets_separately(tmp_path: Path):
+    jobs = [
+        _done_job("t0__p0", "target_0", "binding_panel", peptide_id="peptide_0"),
+        _done_job("t1__p0", "target_1", "binding_panel", peptide_id="peptide_0"),
+    ]
+    written = emit_reports(_batch(jobs), outputs_root=tmp_path, task_description="screen")
+    assert (tmp_path / "target_0" / "panel_report.md").exists()
+    assert (tmp_path / "target_1" / "panel_report.md").exists()
+    assert len(written) == 2
+
+
+def test_emit_reports_monomer_writes_per_job_report(tmp_path: Path):
+    jobs = [_done_job("mono_0", "target_0", "monomer")]
+    written = emit_reports(_batch(jobs), outputs_root=tmp_path, task_description="fold")
+    report = tmp_path / "mono_0" / "report.md"
+    assert report in written
+    assert report.exists()
+
+
+def test_emit_reports_skips_failed_jobs(tmp_path: Path):
+    j = _done_job("t0__p0", "target_0", "binding_panel", peptide_id="peptide_0")
+    j.status = "failed"
+    written = emit_reports(_batch([j]), outputs_root=tmp_path, task_description="screen")
+    assert written == []
+
+
+def test_build_panel_report_inputs_picks_best_model_by_composite():
+    job = Job(
+        job_id="j", inputs={}, plan=[], status="done",
+        results={"tool_extract_colabfold": [
+            ExtractedMetrics(model_id="rank2", backend="colabfold", pdb_path=Path("/tmp/a.pdb"),
+                             mean_plddt=50.0, min_plddt=40, max_plddt=60, per_residue_plddt=[50],
+                             pae=None, iptm=0.3, actifptm=0.3, ranking_score=0.3),
+            ExtractedMetrics(model_id="rank1", backend="colabfold", pdb_path=Path("/tmp/b.pdb"),
+                             mean_plddt=90.0, min_plddt=80, max_plddt=95, per_residue_plddt=[90],
+                             pae=None, iptm=0.95, actifptm=0.95, ranking_score=0.95),
+        ]},
+        metadata={"target_id": "t", "peptide_id": "p0", "kind": "binding_panel"},
+    )
+    inp = build_panel_report_inputs([job], "t", "screen")
+    assert len(inp.complexes) == 1
+    assert inp.complexes[0].metrics.model_id == "rank1"
