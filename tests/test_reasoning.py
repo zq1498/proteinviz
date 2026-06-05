@@ -11,6 +11,8 @@ from preflight.reasoning import (
     _reload_registry,
     build_roadmap,
     estimate_runtime,
+    lookup_tool,
+    make_step,
     resolve_wrapper,
     suggest_analyses,
     tools_for_subtask,
@@ -283,6 +285,40 @@ def test_monomer_branch_one_job_per_target():
     assert all(j.metadata["kind"] == "monomer" for j in rm.jobs)
     assert rm.jobs[0].metadata["target_id"] == "target_0"
     assert rm.jobs[1].metadata["target_id"] == "target_1"
+
+
+# ---------------------------------------------------------------------------
+# make_step — registry-driven JobStep builder (B3)
+# ---------------------------------------------------------------------------
+
+def test_make_step_pulls_call_contract_from_registry():
+    step = make_step("tool_colabfold")
+    entry = lookup_tool("tool_colabfold")
+    assert step.tool_id == "tool_colabfold"
+    assert step.kwargs == entry["call_kwargs"]          # {"fast": False}
+    assert step.input_bindings == entry["bindings"]     # fasta + out_dir
+    assert step.consumes == entry["has_input"]
+    assert step.produces == entry["has_output"]
+
+
+def test_make_step_kwarg_overrides_win():
+    step = make_step("tool_colabfold", kwarg_overrides={"calc_extra_ptm": True})
+    assert step.kwargs == {"fast": False, "calc_extra_ptm": True}
+
+
+def test_make_step_binding_overrides_win():
+    step = make_step(
+        "tool_extract_colabfold",
+        binding_overrides={"out_dir": "data_colabfold_out_dir"},
+    )
+    assert step.input_bindings["out_dir"] == "data_colabfold_out_dir"
+
+
+def test_make_step_no_call_contract_yields_empty_kwargs_and_bindings():
+    # A wrapped tool without call_kwargs/bindings (e.g. per-residue energies has bindings only)
+    step = make_step("tool_extract_colabfold")
+    assert step.kwargs == {}                             # extract has no call_kwargs
+    assert step.input_bindings == {"out_dir": "_job_dir"}
 
 
 # ---------------------------------------------------------------------------

@@ -218,8 +218,11 @@ in `rosetta.py`. See module docstrings for the full pattern.
 - `validate_inputs(spec)` → warnings list: length flags, cysteine-pair flags per sequence.
 - `suggest_analyses(spec)`: panel suggestion when N > 1 peptides; disorder check suggestion for
   long targets; isoform discrimination table for multi-target tasks; cysteine suggestion.
+- `make_step(tool_id, *, kwarg_overrides, binding_overrides)` → `JobStep`: **(B3)** builds a step
+  from the registry call contract (call_kwargs/bindings/has_input/has_output) with per-use overrides.
 - `build_roadmap(spec, feasibility)` → `Roadmap`: populates both human-readable `steps` list
-  and machine-executable `jobs` list. Dispatches to `_binding_branch` or `_monomer_branch`.
+  and machine-executable `jobs` list. Dispatches to `_binding_branch` or `_monomer_branch`. All
+  branches now build steps via `make_step` instead of hand-written `JobStep`s.
 - `Job`, `JobStep`, `BatchResult` re-exported for callers.
 - `estimate_runtime()`: still placeholder constants (uncalibrated).
 

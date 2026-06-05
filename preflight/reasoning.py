@@ -33,7 +33,7 @@ __all__ = [
     "lookup_tool", "lookup_subtask", "lookup_data_type",
     "all_tools", "all_subtasks",
     "tools_for_subtask", "tools_providing", "tools_requiring",
-    "resolve_wrapper",
+    "resolve_wrapper", "make_step",
     "estimate_runtime", "validate_inputs", "suggest_analyses", "build_roadmap",
 ]
 
@@ -213,6 +213,36 @@ def _descendant_subtasks(parent_id: str) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
+# Registry-driven step builder
+# ---------------------------------------------------------------------------
+
+def make_step(
+    tool_id: str,
+    *,
+    kwarg_overrides: dict | None = None,
+    binding_overrides: dict | None = None,
+) -> JobStep:
+    """Build a JobStep from a tool's registry call contract.
+
+    Pulls `call_kwargs`, `bindings`, `has_input` (→ consumes) and `has_output`
+    (→ produces) from the registry entry so a roadmap branch only has to name
+    the tool plus any per-use overrides, instead of hand-writing the wiring.
+
+    kwarg_overrides win over the registry's `call_kwargs`; binding_overrides win
+    over the registry's `bindings` (e.g. the panel path rebinds `out_dir` to
+    `data_colabfold_out_dir`).
+    """
+    entry = lookup_tool(tool_id)
+    return JobStep(
+        tool_id=tool_id,
+        kwargs={**entry.get("call_kwargs", {}), **(kwarg_overrides or {})},
+        input_bindings={**entry.get("bindings", {}), **(binding_overrides or {})},
+        consumes=list(entry.get("has_input", [])),
+        produces=list(entry.get("has_output", [])),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Pre-flight reasoning helpers
 # ---------------------------------------------------------------------------
 
@@ -330,11 +360,11 @@ def _single_pair_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
     binding_tools = tools_for_subtask("subtask_binding")
     if not binding_tools:
         raise RuntimeError("No tools registered for subtask_binding")
-    primary = binding_tools[0]   # tool_colabfold by current registry order
+    primary_id = binding_tools[0]["id"]   # tool_colabfold by current registry order
 
     n_pairs = len(spec.targets) * len(spec.peptides)
     steps = [
-        f"Predict {n_pairs} target-peptide complex(es) via {primary['id']}",
+        f"Predict {n_pairs} target-peptide complex(es) via {primary_id}",
         "Extract ipTM, actifpTM, pLDDT, PAE per complex",
     ]
 
@@ -350,25 +380,8 @@ def _single_pair_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
                     "data_fasta_file": None,
                 },
                 plan=[
-                    JobStep(
-                        tool_id=primary["id"],
-                        kwargs={"fast": False, "calc_extra_ptm": True},
-                        input_bindings={
-                            "fasta": "data_fasta_file",
-                            "out_dir": "_job_dir",
-                        },
-                        consumes=["data_fasta_file"],
-                        produces=primary.get("has_output", []),
-                    ),
-                    JobStep(
-                        tool_id="tool_extract_colabfold",
-                        input_bindings={"out_dir": "_job_dir"},
-                        consumes=["data_pdb_complex"],
-                        produces=[
-                            "data_iptm_score", "data_actifptm_score",
-                            "data_ptm_score", "data_plddt_per_residue", "data_pae_matrix",
-                        ],
-                    ),
+                    make_step(primary_id, kwarg_overrides={"calc_extra_ptm": True}),
+                    make_step("tool_extract_colabfold"),
                 ],
                 metadata={
                     "target_id": target_id,
@@ -409,14 +422,9 @@ def _panel_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
                     "data_pdb_file": None,            # filled by run_batch after predict_panel
                 },
                 plan=[
-                    JobStep(
-                        tool_id="tool_extract_colabfold",
-                        input_bindings={"out_dir": "data_colabfold_out_dir"},
-                        consumes=["data_pdb_complex"],
-                        produces=[
-                            "data_iptm_score", "data_actifptm_score",
-                            "data_ptm_score", "data_plddt_per_residue", "data_pae_matrix",
-                        ],
+                    make_step(
+                        "tool_extract_colabfold",
+                        binding_overrides={"out_dir": "data_colabfold_out_dir"},
                     ),
                 ],
                 metadata={
@@ -435,10 +443,10 @@ def _monomer_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
     folding_tools = tools_for_subtask("subtask_folding")
     if not folding_tools:
         raise RuntimeError("No tools registered for subtask_folding")
-    primary = folding_tools[0]
+    primary_id = folding_tools[0]["id"]
 
     steps = [
-        f"Predict {len(spec.targets)} monomer structures via {primary['id']}",
+        f"Predict {len(spec.targets)} monomer structures via {primary_id}",
         "Extract per-residue pLDDT and pTM",
     ]
 
@@ -452,22 +460,8 @@ def _monomer_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
                 "data_fasta_file": None,
             },
             plan=[
-                JobStep(
-                    tool_id=primary["id"],
-                    kwargs={"fast": False, "calc_extra_ptm": False},
-                    input_bindings={
-                        "fasta": "data_fasta_file",
-                        "out_dir": "_job_dir",
-                    },
-                    consumes=["data_fasta_file"],
-                    produces=primary.get("has_output", []),
-                ),
-                JobStep(
-                    tool_id="tool_extract_colabfold",
-                    input_bindings={"out_dir": "_job_dir"},
-                    consumes=["data_pdb_file"],
-                    produces=["data_ptm_score", "data_plddt_per_residue", "data_pae_matrix"],
-                ),
+                make_step(primary_id, kwarg_overrides={"calc_extra_ptm": False}),
+                make_step("tool_extract_colabfold"),
             ],
             metadata={"target_id": target_id, "kind": "monomer"},
         ))
