@@ -450,3 +450,89 @@ def test_resolve_wrapper_extract_colabfold():
 def test_resolve_wrapper_unknown_tool_raises_key_error():
     with pytest.raises(KeyError):
         resolve_wrapper("tool_does_not_exist")
+
+
+# ---------------------------------------------------------------------------
+# Rosetta hotspot chain — _append_requested_analyses (Task 2, B5 follow-up)
+# ---------------------------------------------------------------------------
+
+def _binding_spec() -> TaskSpec:
+    return TaskSpec(targets=["MKTAY"], peptides=["ACDEF"])
+
+
+def _panel_spec() -> TaskSpec:
+    return TaskSpec(targets=["MKTAY"], peptides=["ACDEF", "GHILM"])
+
+
+def _monomer_spec() -> TaskSpec:
+    return TaskSpec(targets=["MKTAY"])
+
+
+def test_hotspot_marker_appends_two_steps_for_single_pair():
+    spec = _binding_spec()
+    spec.requested_analyses = ["tool_rosetta_confidence_filter"]
+    rm = build_roadmap(spec, _empty_feasibility())
+    ids = [s.tool_id for s in rm.jobs[0].plan]
+    assert "tool_rosetta_alanine_scan" in ids
+    assert "tool_rosetta_confidence_filter" in ids
+    # alanine_scan must precede confidence_filter
+    assert ids.index("tool_rosetta_alanine_scan") < ids.index("tool_rosetta_confidence_filter")
+
+
+def test_hotspot_marker_appends_two_steps_for_panel():
+    spec = _panel_spec()
+    spec.requested_analyses = ["tool_rosetta_confidence_filter"]
+    rm = build_roadmap(spec, _empty_feasibility())
+    for job in rm.jobs:
+        ids = [s.tool_id for s in job.plan]
+        assert "tool_rosetta_alanine_scan" in ids
+        assert "tool_rosetta_confidence_filter" in ids
+
+
+def test_hotspot_steps_are_optional():
+    spec = _binding_spec()
+    spec.requested_analyses = ["tool_rosetta_confidence_filter"]
+    rm = build_roadmap(spec, _empty_feasibility())
+    for step in rm.jobs[0].plan:
+        if step.tool_id in {"tool_rosetta_alanine_scan", "tool_rosetta_confidence_filter"}:
+            assert step.optional is True
+
+
+def test_hotspot_single_pair_uses_A_B_interface():
+    spec = _binding_spec()
+    spec.requested_analyses = ["tool_rosetta_confidence_filter"]
+    rm = build_roadmap(spec, _empty_feasibility())
+    scan_step = next(
+        s for s in rm.jobs[0].plan if s.tool_id == "tool_rosetta_alanine_scan"
+    )
+    assert scan_step.kwargs["interface"] == "A_B"
+
+
+def test_hotspot_panel_uses_AB_C_interface():
+    spec = _panel_spec()
+    spec.requested_analyses = ["tool_rosetta_confidence_filter"]
+    rm = build_roadmap(spec, _empty_feasibility())
+    for job in rm.jobs:
+        scan_step = next(
+            s for s in job.plan if s.tool_id == "tool_rosetta_alanine_scan"
+        )
+        assert scan_step.kwargs["interface"] == "AB_C"
+
+
+def test_hotspot_skipped_for_monomer():
+    spec = _monomer_spec()
+    spec.requested_analyses = ["tool_rosetta_confidence_filter"]
+    rm = build_roadmap(spec, _empty_feasibility())
+    ids = [s.tool_id for s in rm.jobs[0].plan]
+    assert "tool_rosetta_alanine_scan" not in ids
+    assert "tool_rosetta_confidence_filter" not in ids
+
+
+def test_hotspot_combined_with_seq_analyses():
+    spec = _binding_spec()
+    spec.requested_analyses = ["tool_metapredict", "tool_rosetta_confidence_filter"]
+    rm = build_roadmap(spec, _empty_feasibility())
+    ids = [s.tool_id for s in rm.jobs[0].plan]
+    assert "tool_metapredict" in ids
+    assert "tool_rosetta_alanine_scan" in ids
+    assert "tool_rosetta_confidence_filter" in ids

@@ -362,6 +362,14 @@ def build_report_inputs(
     if job.job_dir is not None:
         output_paths["job directory"] = job.job_dir
 
+    disorder_iupred3 = job.results.get("tool_iupred3")
+    metapredict_result = job.results.get("tool_metapredict")
+    disorder_metapredict = (
+        metapredict_result.disorder_scores if metapredict_result is not None else None
+    )
+    cider = job.results.get("tool_localcider")
+    hotspots = job.results.get("tool_rosetta_confidence_filter")
+
     return ReportInputs(
         job_id=job.job_id,
         task_description=task_description,
@@ -373,6 +381,10 @@ def build_report_inputs(
         weights=weights,
         structure=structure,
         sequence=sequence,
+        disorder_iupred3=disorder_iupred3,
+        disorder_metapredict=disorder_metapredict,
+        cider=cider,
+        hotspots=hotspots,
     )
 
 
@@ -407,6 +419,7 @@ def build_panel_report_inputs(
             continue
         best = max(metrics, key=lambda m: composite_score(m, **score_kw))
 
+        metapredict_result = job.results.get("tool_metapredict")
         entries.append(PanelEntry(
             peptide_id=job.metadata.get("peptide_id", job.job_id),
             metrics=best,
@@ -414,7 +427,49 @@ def build_panel_report_inputs(
             sequence=job.results.get("tool_analyze_sequence"),
             label=job.metadata.get("peptide_id", job.job_id),
             job_dir=job.job_dir,
+            disorder_iupred3=job.results.get("tool_iupred3"),
+            disorder_metapredict=(
+                metapredict_result.disorder_scores if metapredict_result is not None else None
+            ),
+            cider=job.results.get("tool_localcider"),
+            hotspots=job.results.get("tool_rosetta_confidence_filter"),
         ))
+
+    # Post-process: if any entry is a scrambled control, compute z-scores for test peptides.
+    # Control IDs follow {parent_id}__scram{k}; detection uses a string prefix check to
+    # avoid importing controls.py on every panel run that doesn't use controls.
+    if any("__scram" in e.peptide_id for e in entries):
+        from dataclasses import replace
+        import math
+        from tools.controls import is_control_id, parent_id_of
+
+        ctrl_scores: dict[str, list[float]] = {}
+        for e in entries:
+            parent = parent_id_of(e.peptide_id)
+            if parent is not None:
+                ctrl_scores.setdefault(parent, []).append(
+                    composite_score(e.metrics, **score_kw)
+                )
+
+        enriched: list = []
+        for e in entries:
+            if is_control_id(e.peptide_id):
+                enriched.append(replace(e, is_control=True))
+                continue
+            ctrls = ctrl_scores.get(e.peptide_id, [])
+            if not ctrls:
+                enriched.append(e)
+                continue
+            null_mean = sum(ctrls) / len(ctrls)
+            null_sd = (
+                math.sqrt(sum((x - null_mean) ** 2 for x in ctrls) / len(ctrls))
+                if len(ctrls) > 1
+                else None
+            )
+            cs = composite_score(e.metrics, **score_kw)
+            z = (cs - null_mean) / null_sd if null_sd and null_sd > 0 else None
+            enriched.append(replace(e, null_mean=null_mean, null_sd=null_sd, z_score=z))
+        entries = enriched
 
     return PanelReportInputs(
         target_id=target_id,

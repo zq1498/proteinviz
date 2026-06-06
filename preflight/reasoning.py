@@ -58,8 +58,9 @@ class TaskSpec:
     user_requested_metrics: list[str] = field(default_factory=list)
     # Opt-in analyses (registry tool ids) the agent confirmed during pre-flight.
     # build_roadmap appends the matching analysis steps to every job's plan.
-    # v1 supports the sequence-based set in _OPT_IN_SEQ_ANALYSES; structure-based
-    # opt-ins (Rosetta hotspot chain) are a follow-up B5 sub-step.
+    # Sequence-based: _OPT_IN_SEQ_ANALYSES (iupred3, metapredict, localcider).
+    # Structure-based: "tool_rosetta_confidence_filter" triggers the alanine-scan
+    # → confidence-filter hotspot chain for binding/panel jobs.
     requested_analyses: list[str] = field(default_factory=list)
 
 
@@ -303,8 +304,17 @@ _ALWAYS_ON_STRUCTURE = "tool_freesasa"
 _ALWAYS_ON_SEQUENCE = "tool_analyze_sequence"
 
 # Opt-in, sequence-based analyses the agent can request via TaskSpec.requested_analyses.
-# (Structure-based opt-ins like the Rosetta hotspot chain are a follow-up B5 sub-step.)
 _OPT_IN_SEQ_ANALYSES = frozenset({"tool_iupred3", "tool_metapredict", "tool_localcider"})
+
+# Opt-in structure-based hotspot chain. The agent writes "tool_rosetta_confidence_filter"
+# in requested_analyses; _append_requested_analyses appends both steps in order.
+_HOTSPOT_MARKER = "tool_rosetta_confidence_filter"
+
+# ColabFold chain assignment: single-pair binding = target chain A, peptide chain B.
+# Panel homodimer target = chains A, B + peptide chain C.
+# The peptide is always the last chain (_peptide_chain_plddt in report.py relies on this).
+_INTERFACE_SINGLE_PAIR = "A_B"
+_INTERFACE_PANEL_HOMODIMER = "AB_C"  # correct for current VEGF homodimer panels
 
 
 def _analysis_steps(*, peptide_sequence: bool) -> list[JobStep]:
@@ -436,18 +446,26 @@ def build_roadmap(spec: TaskSpec, feasibility: FeasibilityReport) -> Roadmap:
 
 
 def _append_requested_analyses(jobs: list[Job], requested: list[str]) -> list[str]:
-    """Append opt-in sequence analyses to every job's plan, in-place.
+    """Append opt-in analyses to every job's plan, in-place.
 
-    v1 handles the sequence-based set (`_OPT_IN_SEQ_ANALYSES`): disorder
-    (tool_iupred3 / tool_metapredict) and tool_localcider. Each is added as an
-    optional step bound to the peptide for binding/panel jobs and the target for
-    monomer jobs. Unknown or not-yet-supported ids are skipped. Returns the
-    sorted list of tool ids actually added (for the human-readable roadmap).
+    Handles two opt-in categories:
+    - Sequence-based (_OPT_IN_SEQ_ANALYSES): iupred3, metapredict, localcider.
+      Added for all job kinds; bound to peptide sequence for complex jobs.
+    - Structure-based hotspot chain (_HOTSPOT_MARKER): alanine_scan →
+      confidence_filter. Added only for binding / binding_panel jobs (complexes
+      have an interface; monomers do not). Both steps are optional.
+
+    Unknown or not-yet-supported ids are skipped. Returns the sorted list of
+    tool ids actually added (for the human-readable roadmap).
     """
     added: set[str] = set()
+    want_hotspots = _HOTSPOT_MARKER in requested
+
     for job in jobs:
-        is_complex = job.metadata.get("kind") in {"binding", "binding_panel"}
+        kind = job.metadata.get("kind")
+        is_complex = kind in {"binding", "binding_panel"}
         seq_override = {"seq": "data_peptide_sequence"} if is_complex else None
+
         for tool_id in requested:
             if tool_id not in _OPT_IN_SEQ_ANALYSES:
                 continue
@@ -455,6 +473,22 @@ def _append_requested_analyses(jobs: list[Job], requested: list[str]) -> list[st
                 make_step(tool_id, binding_overrides=seq_override, optional=True)
             )
             added.add(tool_id)
+
+        if want_hotspots and is_complex:
+            interface = (
+                _INTERFACE_PANEL_HOMODIMER if kind == "binding_panel"
+                else _INTERFACE_SINGLE_PAIR
+            )
+            job.plan.append(
+                make_step(
+                    "tool_rosetta_alanine_scan",
+                    kwarg_overrides={"interface": interface},
+                    optional=True,
+                )
+            )
+            job.plan.append(make_step("tool_rosetta_confidence_filter", optional=True))
+            added.add(_HOTSPOT_MARKER)
+
     return sorted(added)
 
 

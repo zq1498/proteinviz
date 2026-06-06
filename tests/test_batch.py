@@ -316,3 +316,114 @@ def test_build_panel_report_inputs_picks_best_model_by_composite():
     inp = build_panel_report_inputs([job], "t", "screen")
     assert len(inp.complexes) == 1
     assert inp.complexes[0].metrics.model_id == "rank1"
+
+
+# ---------------------------------------------------------------------------
+# build_report_inputs / build_panel_report_inputs — disorder/CIDER/hotspots
+# ---------------------------------------------------------------------------
+
+from tools.analyze import CIDERFeatures
+from tools.batch import build_report_inputs
+from tools.rosetta import ConfidentHotSpot
+
+
+def _base_metrics() -> ExtractedMetrics:
+    return ExtractedMetrics(
+        model_id="r1", backend="colabfold", pdb_path=Path("/tmp/r1.pdb"),
+        mean_plddt=80.0, min_plddt=70, max_plddt=90, per_residue_plddt=[80],
+        pae=None, iptm=0.9, actifptm=0.9, ranking_score=0.9,
+    )
+
+
+def _cider_feat() -> CIDERFeatures:
+    return CIDERFeatures(
+        sequence="MKTAY", fcr=0.2, ncpr=0.1, kappa=0.15, omega=0.05,
+        scd=-0.3, delta=0.0001, mean_hydropathy=0.35, ppii_propensity=0.3,
+        isoelectric_point=8.1, phase_region=1,
+    )
+
+
+def _hotspot_feat() -> ConfidentHotSpot:
+    return ConfidentHotSpot(
+        rosetta_resnum=5, pdb_resnum=5, chain="A", resname="TRP",
+        ddG=2.5, plddt=85.0, confident=True,
+    )
+
+
+class _FakeMetapredict:
+    disorder_scores = [0.7, 0.8, 0.9]
+
+
+def test_build_report_inputs_populates_iupred3():
+    job = Job(
+        job_id="j", inputs={}, plan=[], status="done",
+        results={
+            "tool_extract_colabfold": [_base_metrics()],
+            "tool_iupred3": [0.3, 0.6, 0.8],
+        },
+        metadata={"target_id": "t", "kind": "binding"},
+    )
+    ri = build_report_inputs(job, "test")
+    assert ri.disorder_iupred3 == [0.3, 0.6, 0.8]
+    assert ri.disorder_metapredict is None
+
+
+def test_build_report_inputs_populates_metapredict():
+    job = Job(
+        job_id="j", inputs={}, plan=[], status="done",
+        results={
+            "tool_extract_colabfold": [_base_metrics()],
+            "tool_metapredict": _FakeMetapredict(),
+        },
+        metadata={"target_id": "t", "kind": "binding"},
+    )
+    ri = build_report_inputs(job, "test")
+    assert ri.disorder_metapredict == [0.7, 0.8, 0.9]
+
+
+def test_build_report_inputs_populates_cider():
+    job = Job(
+        job_id="j", inputs={}, plan=[], status="done",
+        results={
+            "tool_extract_colabfold": [_base_metrics()],
+            "tool_localcider": _cider_feat(),
+        },
+        metadata={"target_id": "t", "kind": "binding"},
+    )
+    ri = build_report_inputs(job, "test")
+    assert ri.cider is not None
+    assert ri.cider.kappa == 0.15
+
+
+def test_build_report_inputs_populates_hotspots():
+    spots = [_hotspot_feat()]
+    job = Job(
+        job_id="j", inputs={}, plan=[], status="done",
+        results={
+            "tool_extract_colabfold": [_base_metrics()],
+            "tool_rosetta_confidence_filter": spots,
+        },
+        metadata={"target_id": "t", "kind": "binding"},
+    )
+    ri = build_report_inputs(job, "test")
+    assert ri.hotspots is spots
+
+
+def test_build_panel_report_inputs_populates_disorder_and_cider():
+    job = Job(
+        job_id="j", inputs={}, plan=[], status="done",
+        results={
+            "tool_extract_colabfold": [_base_metrics()],
+            "tool_iupred3": [0.4, 0.5],
+            "tool_metapredict": _FakeMetapredict(),
+            "tool_localcider": _cider_feat(),
+            "tool_rosetta_confidence_filter": [_hotspot_feat()],
+        },
+        metadata={"target_id": "t", "peptide_id": "p0", "kind": "binding_panel"},
+    )
+    inp = build_panel_report_inputs([job], "t", "screen")
+    e = inp.complexes[0]
+    assert e.disorder_iupred3 == [0.4, 0.5]
+    assert e.disorder_metapredict == [0.7, 0.8, 0.9]
+    assert e.cider is not None and e.cider.phase_region == 1
+    assert e.hotspots is not None and len(e.hotspots) == 1

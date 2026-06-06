@@ -182,10 +182,12 @@ in `rosetta.py`. See module docstrings for the full pattern.
 - `executive_summary()` / `_panel_executive_summary()`: adapt language to monomer (pTM tiers) vs.
   complex (composite tiers); share `_binding_tier` / `_fold_tier` / `_actifptm_warning`.
 - `write_report(inputs, out_path)`, `write_panel_report(inp, out_path)`.
-- `ReportInputs` dataclass carries optional `weights` dict passed through to `composite_score`,
-  plus optional `structure: StructureFeatures`, `sequence: SequenceFeatures`, and
-  `disorder: list[float]` fields — all consumed when present (SASA, disulfides, disorder scores
-  appear in the Flagged Observations section).
+- `ReportInputs` / `PanelEntry` carry optional `structure`, `sequence`, `disorder_iupred3`,
+  `disorder_metapredict`, `cider`, `hotspots` analysis fields. §4 Structural Analysis renders
+  both disorder predictors labeled separately (mean + fraction > 0.5 + plain-language gloss),
+  a CIDER block (κ, FCR, NCPR, phase_region), and top-5 hotspot hits. Panel Per-Complex Notes
+  shows per-peptide one-liners for all four. Populated by `build_report_inputs` /
+  `build_panel_report_inputs` from the corresponding `job.results[tool_id]` keys.
 
 ### Orchestrator — `tools/batch.py` [COMPLETE]
 - `run_batch(spec, roadmap, jobs_root, abort_on_failure, outputs_root=None)` → `BatchResult`. When
@@ -237,8 +239,10 @@ in `rosetta.py`. See module docstrings for the full pattern.
   branches build steps via `make_step`. **(B5)** Every branch appends `_analysis_steps(...)` (always-on
   optional `tool_freesasa` + `tool_analyze_sequence`; the sequence analyzer binds the peptide for
   complexes via `data_peptide_sequence`, the target for monomers). `build_roadmap` then appends
-  `spec.requested_analyses` opt-ins via `_append_requested_analyses` (v1: sequence-based disorder /
-  CIDER; structure-based Rosetta hotspot chain is a follow-up sub-step).
+  `spec.requested_analyses` opt-ins via `_append_requested_analyses`: sequence-based set
+  (`_OPT_IN_SEQ_ANALYSES`: iupred3, metapredict, localcider) and structure-based Rosetta
+  hotspot chain (`_HOTSPOT_MARKER = "tool_rosetta_confidence_filter"` → optional alanine_scan
+  with per-kind `interface` + optional confidence_filter; skipped for monomers).
 - `Job`, `JobStep`, `BatchResult` re-exported for callers.
 - `estimate_runtime()`: still placeholder constants (uncalibrated).
 
@@ -344,3 +348,4 @@ in `rosetta.py`. See module docstrings for the full pattern.
 [2026-05-13b] — Registry housekeeping: wired tool_freesasa → analyze_structure; added tier: to all entries (user set Boltz-1/DSSP/Biotite/NetSurfP-3/PDBePISA/FoldX → tier 3); deprecated tool_anchor2 (REST defunct, AIUPred covers it); added tool_rosetta_* entries (score_interface, per_residue_energies, alanine_scan, confidence_filter_scan) wired to tools.rosetta.*; added data_interface_score, data_per_residue_energy, data_ala_scan_result, data_confident_hotspot_list to data_types.yaml.
 [2026-05-13] — Reconciled project_state.md with actual code: (1) report.py now consumes StructureFeatures/SequenceFeatures/disorder — removed from stubs and open questions; (2) batch.py wires predict_panel via _run_panel_predictions for binding_panel jobs — removed from open questions; (3) tool_colabfold_search / tool_dcc_msa marked deprecated: true in tools.yaml — updated registry section and stubs table; (4) visualize.py gained render_complex_py3dmol and write_complex_html — description updated; (5) test_visualize.py and validate_msa_caching.py added to test suite; (6) Next Priorities pruned to 4 remaining items.
 [2026-06-05] — Part A (report wiring) complete: closed the prompt→report break. Added aggregated panel report to tools/report.py (`PanelEntry`/`PanelReportInputs`/`render_panel_report`/`write_panel_report`; one row per peptide ranked by composite; panel-wide actifpTM warning) with shared `_binding_tier`/`_fold_tier`/`_actifptm_warning` helpers. Added `build_panel_report_inputs` + `emit_reports` to tools/batch.py and `run_batch(outputs_root=...)` + CLI `--outputs-root` so a run emits reports automatically. Baseline hygiene: added pytest.ini (testpaths=tests, fixes jobs/ mis-collection); refreshed stale test_report.py (7-section) and test_reasoning.py (panel routing) expectations; xfail'd estimate_runtime formula tests until calibrated. +9 tests; suite 126 passed / 2 skipped / 2 xfailed. Part B (orchestrator+registry hybrid refactor) deferred to a fresh session — plan in PART_B_REFACTOR_PLAN.md.
+[2026-06-05] — B5 follow-ups complete: (1) Disorder/CIDER/hotspot rendering wired end-to-end — `ReportInputs` + `PanelEntry` gained `disorder_iupred3`, `disorder_metapredict`, `cider`, `hotspots` fields; `build_report_inputs` + `build_panel_report_inputs` populate them from `job.results`; `_render_structural_section` renders both disorder predictors labeled separately + CIDER block (κ/FCR/NCPR/phase_region + gloss) + hotspot block (top 5 hits, confident-first); panel Per-Complex Notes shows per-peptide one-liners. (2) Rosetta hotspot chain wired — `_append_requested_analyses` handles `"tool_rosetta_confidence_filter"` in `requested_analyses`, appending optional `alanine_scan` (with per-kind `interface`: `"A_B"` single-pair / `"AB_C"` panel homodimer) then optional `confidence_filter` for binding/panel jobs only. +21 tests; suite 198 passed / 2 skipped / 2 xfailed.

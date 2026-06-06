@@ -16,8 +16,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tools.analyze import SequenceFeatures, StructureFeatures
+from tools.analyze import CIDERFeatures, SequenceFeatures, StructureFeatures
 from tools.extract import DEFAULT_SCORE_WEIGHTS, ExtractedMetrics, composite_score
+from tools.rosetta import ConfidentHotSpot
 
 
 @dataclass
@@ -30,9 +31,12 @@ class ReportInputs:
     follow_up: list[str] = field(default_factory=list)
     output_paths: dict[str, Path] = field(default_factory=dict)
     weights: dict[str, float] | None = None
-    structure: StructureFeatures | None = None   # from analyze_structure()
-    sequence: SequenceFeatures | None = None     # from analyze_sequence()
-    disorder: list[float] | None = None          # from query_aiupred()
+    structure: StructureFeatures | None = None           # from analyze_structure()
+    sequence: SequenceFeatures | None = None             # from analyze_sequence()
+    disorder_iupred3: list[float] | None = None          # from tool_iupred3
+    disorder_metapredict: list[float] | None = None      # from tool_metapredict
+    cider: CIDERFeatures | None = None                   # from tool_localcider
+    hotspots: list[ConfidentHotSpot] | None = None       # from tool_rosetta_confidence_filter
 
 
 def _binding_tier(score: float) -> tuple[str, str]:
@@ -160,19 +164,91 @@ def _render_structural_section(inp: ReportInputs) -> list[str]:
     if inp.sequence and inp.sequence.flags:
         lines += ["", f"**Sequence flags:** {'; '.join(inp.sequence.flags)}"]
 
-    if inp.disorder is not None:
-        mean_d = sum(inp.disorder) / len(inp.disorder)
-        high_frac = sum(1 for d in inp.disorder if d > 0.5) / len(inp.disorder)
-        lines += [
-            "",
-            f"- Mean disorder score: {mean_d:.2f} "
-            f"({high_frac * 100:.0f}% of residues above 0.5 threshold)",
-        ]
+    if inp.disorder_iupred3 is not None:
+        lines += _render_disorder_block("iupred3", inp.disorder_iupred3)
 
-    if not inp.structure and not inp.sequence and inp.disorder is None:
+    if inp.disorder_metapredict is not None:
+        lines += _render_disorder_block("metapredict", inp.disorder_metapredict)
+
+    if inp.cider is not None:
+        lines += _render_cider_block(inp.cider)
+
+    if inp.hotspots is not None:
+        lines += _render_hotspot_block(inp.hotspots)
+
+    has_any = (
+        inp.structure or inp.sequence
+        or inp.disorder_iupred3 is not None
+        or inp.disorder_metapredict is not None
+        or inp.cider is not None
+        or inp.hotspots is not None
+    )
+    if not has_any:
         lines.append("_No structural analysis data available._")
 
     lines.append("")
+    return lines
+
+
+_PHASE_REGION_LABELS = {
+    1: "strongly disordered (low charge, low hydropathy)",
+    2: "weak polyampholyte / boundary IDR",
+    3: "strong polyampholyte",
+    4: "strong polyelectrolyte",
+    5: "globular / folded-like",
+}
+
+_HOTSPOT_TOP_N = 5
+
+
+def _render_disorder_block(source: str, scores: list[float]) -> list[str]:
+    """Render one disorder predictor's scores as a labeled bullet + interpretation."""
+    mean_d = sum(scores) / len(scores)
+    high_frac = sum(1 for d in scores if d > 0.5) / len(scores)
+    gloss = (
+        "binder is largely disordered — complex pLDDT on the peptide chain is the primary confidence metric"
+        if mean_d > 0.5
+        else "low mean disorder — sequence is predicted to be ordered in isolation"
+    )
+    return [
+        "",
+        f"- **Disorder ({source}):** mean {mean_d:.2f}, "
+        f"{high_frac * 100:.0f}% of residues > 0.5 — {gloss}",
+    ]
+
+
+def _render_cider_block(c: CIDERFeatures) -> list[str]:
+    """Render key CIDER descriptors with plain-language interpretation."""
+    region_label = _PHASE_REGION_LABELS.get(c.phase_region, f"region {c.phase_region}")
+    kappa_gloss = (
+        "segregated charge blocks (compact disordered ensemble likely)"
+        if c.kappa > 0.3
+        else "well-mixed charges"
+    )
+    return [
+        "",
+        f"- **CIDER:** κ {c.kappa:.3f} ({kappa_gloss}), "
+        f"FCR {c.fcr:.3f}, NCPR {c.ncpr:+.3f}, "
+        f"phase region {c.phase_region} ({region_label})",
+    ]
+
+
+def _render_hotspot_block(hotspots: list[ConfidentHotSpot]) -> list[str]:
+    """Render top N hotspot hits with confidence label."""
+    if not hotspots:
+        return ["", "- **Hot-spot scan:** no interface residues flagged."]
+    n_conf = sum(1 for h in hotspots if h.confident)
+    lines = [
+        "",
+        f"- **Hot-spot scan (alanine scan × pLDDT filter):** "
+        f"{n_conf} confident / {len(hotspots)} total interface residues above ΔΔG threshold. "
+        f"Top {min(_HOTSPOT_TOP_N, len(hotspots))} hits (confident-first, ΔΔG descending):",
+    ]
+    for h in hotspots[:_HOTSPOT_TOP_N]:
+        conf_tag = "confident" if h.confident else f"uncertain pLDDT {h.plddt:.0f}"
+        lines.append(
+            f"  - {h.chain}{h.pdb_resnum} {h.resname}: ΔΔG {h.ddG:+.2f} kcal/mol ({conf_tag})"
+        )
     return lines
 
 
@@ -273,8 +349,16 @@ class PanelEntry:
     metrics: ExtractedMetrics                      # best model for this complex
     structure: StructureFeatures | None = None     # from analyze_structure()
     sequence: SequenceFeatures | None = None       # from analyze_sequence()
-    label: str | None = None                       # human label (e.g. peptide sequence)
-    job_dir: Path | None = None                    # raw output location
+    label: str | None = None                              # human label (e.g. peptide sequence)
+    job_dir: Path | None = None                           # raw output location
+    is_control: bool = False                              # True for scrambled controls
+    null_mean: float | None = None                        # mean composite of matched scrambles
+    null_sd: float | None = None                          # SD of matched scrambles (None if n=1)
+    z_score: float | None = None                          # (composite - null_mean) / null_sd
+    disorder_iupred3: list[float] | None = None           # from tool_iupred3
+    disorder_metapredict: list[float] | None = None       # from tool_metapredict
+    cider: CIDERFeatures | None = None                    # from tool_localcider
+    hotspots: list[ConfidentHotSpot] | None = None        # from tool_rosetta_confidence_filter
 
 
 @dataclass
@@ -327,7 +411,11 @@ def render_panel_report(inp: PanelReportInputs) -> str:
     """
     kw: dict = {"weights": inp.weights} if inp.weights else {}
     used_weights = inp.weights or DEFAULT_SCORE_WEIGHTS
-    ranked = sorted(inp.complexes, key=lambda e: composite_score(e.metrics, **kw), reverse=True)
+    ranked = sorted(
+        [e for e in inp.complexes if not e.is_control],
+        key=lambda e: composite_score(e.metrics, **kw),
+        reverse=True,
+    )
 
     lines: list[str] = [
         f"# Panel Report: {inp.target_id}",
@@ -373,7 +461,23 @@ def render_panel_report(inp: PanelReportInputs) -> str:
         )
     lines.append("")
 
-    lines += ["## 4. Per-Complex Notes", ""]
+    has_zscore = any(e.z_score is not None for e in ranked)
+    sec_offset = 1 if has_zscore else 0
+    if has_zscore:
+        lines += ["## 4. Selectivity vs Scrambled Controls", ""]
+        lines += [
+            "| Peptide | Composite | Null Mean | Null SD | Z-score |",
+            "|---------|-----------|-----------|---------|---------|",
+        ]
+        for e in ranked:
+            cs = composite_score(e.metrics, **kw)
+            null_mean = f"{e.null_mean:.3f}" if e.null_mean is not None else "—"
+            null_sd = f"{e.null_sd:.3f}" if e.null_sd is not None else "n/a"
+            z = f"{e.z_score:+.2f}" if e.z_score is not None else "—"
+            lines.append(f"| {e.label or e.peptide_id} | {cs:.3f} | {null_mean} | {null_sd} | {z} |")
+        lines.append("")
+
+    lines += [f"## {4 + sec_offset}. Per-Complex Notes", ""]
     notes_written = False
     for e in ranked:
         bits: list[str] = []
@@ -382,6 +486,24 @@ def render_panel_report(inp: PanelReportInputs) -> str:
             bits.append(f"disulfides {pairs}")
         if e.sequence and e.sequence.flags:
             bits.append("; ".join(e.sequence.flags))
+        # Disorder: iupred3 and/or metapredict shown separately when both ran
+        for source, scores in [("iupred3", e.disorder_iupred3), ("metapredict", e.disorder_metapredict)]:
+            if scores is not None:
+                mean_d = sum(scores) / len(scores)
+                pct = sum(1 for d in scores if d > 0.5) / len(scores) * 100
+                gloss = "largely disordered — trust peptide-chain pLDDT" if mean_d > 0.5 else "ordered"
+                bits.append(f"disorder({source}) {pct:.0f}% > 0.5 ({gloss})")
+        if e.cider is not None:
+            c = e.cider
+            region_label = _PHASE_REGION_LABELS.get(c.phase_region, f"region {c.phase_region}")
+            bits.append(f"κ {c.kappa:.2f}, FCR {c.fcr:.2f}, NCPR {c.ncpr:+.2f}, {region_label}")
+        if e.hotspots is not None and e.hotspots:
+            n_conf = sum(1 for h in e.hotspots if h.confident)
+            top = e.hotspots[0]
+            bits.append(
+                f"hotspots: {n_conf} confident, top hit {top.chain}{top.pdb_resnum} "
+                f"{top.resname} ΔΔG {top.ddG:+.2f}"
+            )
         if bits:
             lines.append(f"- **{e.label or e.peptide_id}:** {' · '.join(bits)}")
             notes_written = True
@@ -395,15 +517,15 @@ def render_panel_report(inp: PanelReportInputs) -> str:
         if warning is not None:
             auto_flags.append(warning + " This applies to every 3+ chain complex in this panel.")
             break
-    lines += ["## 5. Flagged Observations", ""]
+    lines += [f"## {5 + sec_offset}. Flagged Observations", ""]
     lines += [f"- {f}" for f in auto_flags] if auto_flags else ["_No flags raised._"]
     lines.append("")
 
-    lines += ["## 6. Suggested Follow-Up", ""]
+    lines += [f"## {6 + sec_offset}. Suggested Follow-Up", ""]
     lines += [f"- {item}" for item in inp.follow_up] if inp.follow_up else ["_None recorded._"]
     lines.append("")
 
-    lines += ["## 7. Raw Output Locations", ""]
+    lines += [f"## {7 + sec_offset}. Raw Output Locations", ""]
     paths = dict(inp.output_paths)
     for e in ranked:
         if e.job_dir is not None:
