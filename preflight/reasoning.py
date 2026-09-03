@@ -34,7 +34,7 @@ __all__ = [
     "all_tools", "all_subtasks",
     "tools_for_subtask", "tools_providing", "tools_requiring",
     "resolve_wrapper", "make_step", "select_tool",
-    "estimate_runtime", "validate_inputs", "suggest_analyses", "build_roadmap",
+    "validate_inputs", "suggest_analyses", "build_roadmap",
 ]
 
 
@@ -66,7 +66,6 @@ class TaskSpec:
 
 @dataclass
 class FeasibilityReport:
-    estimated_runtime_s: float
     gpu_required: bool
     warnings: list[str] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
@@ -333,19 +332,6 @@ def _analysis_steps(*, peptide_sequence: bool) -> list[JobStep]:
 # ---------------------------------------------------------------------------
 # Pre-flight reasoning helpers
 # ---------------------------------------------------------------------------
-
-def estimate_runtime(n_targets: int, n_peptides: int, avg_length: int) -> float:
-    """Rough runtime estimate in seconds for a full pairwise sweep on one GPU.
-
-    Calibration TODO — replace constants after first real runs.
-    Might be kind of useless honestly since im usually gremlin running on scavenger gpus so it's
-    different hardware. Most of the runtimes tend to be CPU-bound MSA searches though, so I could be wrong
-    """
-    pairs = max(1, n_targets) * max(1, n_peptides or 1)
-    per_pair_s = 60 + 0.5 * avg_length
-    return 0 # uncalibrated; populate from SLURM sacct wall-clock data
-    # return pairs * per_pair_s
-
 
 def validate_inputs(spec: TaskSpec) -> list[str]:
     """Return human-readable warnings derived from sequence-level heuristics.

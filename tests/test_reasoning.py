@@ -11,7 +11,6 @@ from preflight.reasoning import (
     TaskSpec,
     _reload_registry,
     build_roadmap,
-    estimate_runtime,
     lookup_tool,
     make_step,
     resolve_wrapper,
@@ -32,46 +31,7 @@ def _fresh_registry():
 
 
 def _empty_feasibility() -> FeasibilityReport:
-    return FeasibilityReport(estimated_runtime_s=0.0, gpu_required=True)
-
-
-# ---------------------------------------------------------------------------
-# estimate_runtime
-# ---------------------------------------------------------------------------
-
-@pytest.mark.xfail(
-    reason="estimate_runtime is an uncalibrated placeholder returning 0; "
-    "re-enable the formula assertion once it is calibrated from sacct data.",
-    strict=True,
-)
-def test_estimate_runtime_documented_constants():
-    # Locks the placeholder in: 1 pair * (60 + 0.5*100) = 110s
-    assert estimate_runtime(1, 1, 100) == pytest.approx(110.0)
-
-
-@pytest.mark.xfail(
-    reason="estimate_runtime returns 0 unconditionally, which makes the scaling "
-    "assertion below vacuously true (0 == 80*0). The explicit one > 0 check "
-    "keeps this xfailing for the right reason instead of xpassing on a "
-    "trivial identity. strict=True so a calibration fix is caught here "
-    "instead of silently xpassing.",
-    strict=True,
-)
-def test_estimate_runtime_scales_with_pairs():
-    one = estimate_runtime(1, 1, 50)
-    many = estimate_runtime(4, 20, 50)
-    assert one > 0
-    assert many == pytest.approx(80 * one)
-
-
-@pytest.mark.xfail(
-    reason="estimate_runtime is an uncalibrated placeholder returning 0; "
-    "re-enable once it is calibrated from sacct data.",
-    strict=True,
-)
-def test_estimate_runtime_treats_zero_peptides_as_one_pass():
-    # max(1, n_peptides or 1) — monomer-only spec should still give a finite estimate
-    assert estimate_runtime(2, 0, 100) > 0
+    return FeasibilityReport(gpu_required=True)
 
 
 # ---------------------------------------------------------------------------

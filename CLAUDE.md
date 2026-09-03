@@ -51,7 +51,7 @@ When a user submits a task, before running anything, the agent must:
 
 1. **Parse and restate the task.** Extract entities (target sequences, peptide sequences, objective). Restate them back to the user in structured form. "You have provided 4 target sequences and 20 peptide sequences. You want to test all 80 pairwise interactions, extract ipTM and actifpTM, and return PDB files. Is this correct?"
 
-2. **Feasibility check.** Estimate runtime given available compute. Flag resource constraints. Identify failure modes specific to the inputs: peptides shorter than ~5 residues often give uninterpretable interfaces; peptides longer than ~40 residues inflate the ipTM denominator and make actifpTM essential; targets with large disordered regions will have low pLDDT that propagates into complex confidence.
+2. **Feasibility check.** Flag runtime *risk factors* rather than quoting a numeric ETA — jobs run on Duke DCC's `scavenger-gpu` partition, where queue wait and hardware assignment are unpredictable enough that a wall-clock estimate would be fabricated confidence, not a real one. Name the drivers instead: pairwise count, sequence lengths (MSA search is usually the CPU-bound bottleneck, not the fold itself), and whether this is competing with other scavenger jobs. Flag resource constraints. Identify failure modes specific to the inputs: peptides shorter than ~5 residues often give uninterpretable interfaces; peptides longer than ~40 residues inflate the ipTM denominator and make actifpTM essential; targets with large disordered regions will have low pLDDT that propagates into complex confidence.
 
 3. **Metric suggestion.** Based on properties of the inputs, proactively suggest analyses the user may not have thought to request. Examples:
    - If any input sequence has a cysteine pair within ~8 residues: "These peptides contain potential intramolecular disulfide patterns. Run reduced vs. oxidized predictions?"
@@ -59,7 +59,7 @@ When a user submits a task, before running anything, the agent must:
    - If peptides are all similar length and motif: "Peptides appear to share a common motif. Want residue-level contribution analysis via PeptiDerive (Rosetta) to identify the minimal binding determinants?"
    - If task involves multiple isoforms: "This setup will allow direct comparison of isoform discrimination. Should I generate a comparative ranking table?"
 
-4. **Roadmap.** Present an ordered job list with time estimates and decision points. Explicitly mark where user input is needed before proceeding.
+4. **Roadmap.** Present an ordered job list with runtime-risk flags (not numeric time estimates — see § Feasibility check) and decision points. Explicitly mark where user input is needed before proceeding.
 
 5. **Wait for confirmation.** Do not execute until the user confirms or modifies the plan.
 
@@ -69,7 +69,7 @@ The pre-flight layer must actively resist sycophancy. Specific rules:
 
 - Do not say "this will work" — say "this should work provided X, Y, Z."
 - Do not accept the user's framing uncritically. If the experimental logic has a flaw, raise it. "You're testing 20 peptides against 4 isoforms, but peptides 3, 7, and 14 are too short to form a stable interface — want to proceed anyway or filter?"
-- Every feasibility statement must name its assumptions. If GPU availability is unknown, say runtime estimates are conditional on that.
+- Every feasibility statement must name its assumptions. Do not quote a numeric runtime estimate — scavenger-partition wall-clock is not predictable enough to make one honest; say so explicitly rather than fabricating a number.
 - If the model genuinely cannot assess something, say so. Do not fabricate an assessment to be helpful.
 - Err toward flagging rather than omitting. A false positive flag is a minor annoyance; a missed problem wastes hours of compute.
 

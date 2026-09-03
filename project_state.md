@@ -335,7 +335,11 @@ deserialises the result. Protocol: `{"function": "<name>", "kwargs": {...}}` on 
     appends optional `tool_rosetta_alanine_scan` (interface `"A_B"` for single-pair, `"AB_C"` for
     panel homodimer) then optional `tool_rosetta_confidence_filter`; skipped for monomers.
 - `Job`, `JobStep`, `BatchResult` re-exported for callers.
-- `estimate_runtime()`: still placeholder constants (uncalibrated).
+- `estimate_runtime()` removed (2026-09-02): scavenger-partition GPU wall-clock is too variable to
+  estimate meaningfully. `FeasibilityReport` lost its `estimated_runtime_s` field — it was already
+  unread inside `build_roadmap`, so nothing downstream depended on it. Pre-flight now flags runtime
+  *risk factors* (pairwise count, sequence length, MSA-search cost) qualitatively instead — see
+  CLAUDE.md § Feasibility check.
 
 ### Pre-flight capability registry — `preflight/capabilities/` [LIVE]
 - Three-axis YAML registry. Wired wrappers (non-null): `tool_colabfold` →
@@ -363,9 +367,8 @@ deserialises the result. Protocol: `{"function": "<name>", "kwargs": {...}}` on 
 - `check_connection()` → `(ok, message)`.
 
 ### Test suite — `tests/` [COMPLETE]
-Suite: **239 passed, 2 skipped, 3 xfailed** (xfail: `estimate_runtime` formula tests, uncalibrated;
-`strict=True` on all three so a calibration fix that makes them pass forces the xfail marker's
-removal instead of silently xpassing).
+Suite: **239 passed, 2 skipped, 0 xfailed**. The three `estimate_runtime` xfail tests were
+deleted along with the function itself (2026-09-02) rather than left around as dead placeholders.
 - `test_batch.py`: `_ensure_fasta` coverage (monomer, multimer, skip-if-set, bad-type).
 - `test_registry_integrity.py`: cross-reference consistency for all three YAML files; wrapper
   import/callable check for every non-null entry; re-export contract for `reasoning` module.
@@ -405,7 +408,6 @@ removal instead of silently xpassing).
 | `tools/visualize.py` PyMOL | In progress | `render_pymol()` raises `NotImplementedError`; multiple other viewers exist |
 | `tools/predict.py` ESMFold | Stub | `run_esmfold_api` raises `NotImplementedError` |
 | `tools/extract.py` ESMFold | Stub | |
-| `preflight/reasoning.py` `estimate_runtime` | Returns placeholder | Uncalibrated; populate from `sacct` wall-clock data |
 | `composite_score` weights | Uncalibrated | 0.5/0.3/0.2 split; needs labeled binder/non-binder set |
 | Boltz-1, FoldX, NetSurfP-3, DSSP, PDBePISA | Null wrappers | Tier 2/3 entries in tools.yaml; declared but not callable |
 
@@ -425,8 +427,6 @@ removal instead of silently xpassing).
 1. **`composite_score` calibration/ablation**: run extraction + scoring on completed panel results;
    tune weights on any binder/non-binder labels available from the VEGF selectivity screen.
 2. **`tools/visualize.py` PyMOL**: implement `render_pymol()` for publication-quality static images.
-3. **`estimate_runtime()` calibration**: populate from `sacct` wall-clock data once enough panel
-   jobs have completed; current implementation returns placeholder constants.
 
 ## Recent Bot Suggestions
 <!-- Bot appends entries here after each run -->
@@ -443,3 +443,4 @@ removal instead of silently xpassing).
 [2026-06-06] — Synced project_state.md with ARCHITECTURE.md: fixed stale `predict_panel` description (now blocking, not fire-and-forget); added `PanelResult.local_output_dirs`; added sections for `tools/_a3m.py`, `tools/metapredict.py`, and `tools/controls.py`; updated reasoning.py and batch.py for Part B additions (make_step B3, select_tool B4, _analysis_steps/_append_requested_analyses B5, optional-step isolation, _run_post_plan_analysis retirement); updated report.py and registry for controls/z-score/§4 selectivity section; updated test count to 198/2/2; pruned resolved stubs from the stubs table.
 [2026-06-07] — Pass 1 epitope fingerprinting: added `tools/fingerprint.py` (`ContactFingerprint`, `make_fingerprint`, `_to_vector`, `jaccard_matrix`, `cluster_fingerprints`); `PanelEntry` gained `epitope_cluster: str | None`; `build_panel_report_inputs` computes fingerprints per entry and assigns cluster labels; `render_panel_report` adds a conditional Epitope Families section + an Epitope column in Ranked Binders when clusters are present. No pLDDT gating in Pass 1. This backfills a project_state.md gap — ARCHITECTURE.md was updated at the time but this file wasn't; caught during the 2026-09-02 tightening pass below.
 [2026-09-02] — Architecture tightening pass (bounded, mechanical — see the `project_architecture_tightening` plan; job_id/done.flag convention and real `estimate_runtime` calibration were explicitly deferred, both need info only Zach has). (1) Landed the in-flight Pass 1 fingerprinting + scrambled-controls + `tools/_a3m.py` refactor work that had been sitting uncommitted. (2) Fixed `test_estimate_runtime_scales_with_pairs`, which passed vacuously (0 == 80*0) under the uncalibrated placeholder — added an explicit `one > 0` assertion and set `strict=True` on all three `estimate_runtime` xfails so a future calibration fix is caught here instead of silently xpassing. (3) Added `tests/test_compare.py`, `tests/test_plot.py`, `tests/test_a3m.py` — previously-untested pure modules. (4) Doc consolidation: expanded the `composite_score` open design question in ARCHITECTURE.md to summarize `composite_score_minimum_implementation.md` (what's implemented — mean/sd z-score only — vs. not — robust z-score, empirical p-value, multiple-testing correction); documented `papers_index.yaml`'s intentional root placement (per its own guide doc, not a stray file); backfilled this file's missing fingerprint.py section (see entry above). +41 tests; suite 239 passed / 2 skipped / 3 xfailed.
+[2026-09-02b] — Removed `estimate_runtime()` entirely per Zach: scavenger-partition GPU wall-clock is too variable for a numeric estimate to be useful (most of the runtime is CPU-bound MSA search anyway). `FeasibilityReport.estimated_runtime_s` field removed — it was already dead: `build_roadmap` accepted the `feasibility` param but never read any of its fields, so this is a pure deletion, not a behavior change. Deleted the three now-pointless xfail tests in `test_reasoning.py` rather than leaving placeholder assertions around; suite went from 3 xfailed to 0. Reworded CLAUDE.md's pre-flight § Feasibility check and § Roadmap (and the matching anti-hyperoptimism bullet) to ask for qualitative runtime-risk flags — pairwise count, sequence length, MSA cost, queue contention — instead of a numeric ETA, so the doc no longer instructs the agent to do something the code no longer supports. This also resolves item 7 of the `project_architecture_tightening` plan (previously flagged as needing Zach's sacct data — turns out the answer was "don't calibrate it, remove it").

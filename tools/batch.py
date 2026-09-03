@@ -27,7 +27,7 @@ from typing import Any
 from preflight.jobs import BatchResult, Job, JobStep
 from preflight.reasoning import (
     Roadmap, TaskSpec, FeasibilityReport,
-    build_roadmap, estimate_runtime, lookup_tool, resolve_wrapper,
+    build_roadmap, lookup_tool, resolve_wrapper,
 )
 
 
@@ -659,11 +659,7 @@ def main() -> None:
     args = p.parse_args()
 
     spec = TaskSpec(targets=args.targets, peptides=args.peptides, objective=args.objective)
-    avg_len = sum(len(s) for s in spec.targets + spec.peptides) // max(1, len(spec.targets) + len(spec.peptides))
-    feas = FeasibilityReport(
-        estimated_runtime_s=estimate_runtime(len(spec.targets), len(spec.peptides), avg_len),
-        gpu_required=True,
-    )
+    feas = FeasibilityReport(gpu_required=True)
     roadmap = build_roadmap(spec, feas)
 
     print("[batch] roadmap steps:")
