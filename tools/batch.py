@@ -471,6 +471,36 @@ def build_panel_report_inputs(
             enriched.append(replace(e, null_mean=null_mean, null_sd=null_sd, z_score=z))
         entries = enriched
 
+    # Compute contact fingerprints and assign epitope cluster labels.
+    # Skips controls and entries without structure analysis; establishes a
+    # shared universe_size (max observed target-chain residue number) before
+    # building vectors so all fingerprints in the panel are comparable.
+    fp_candidates = [e for e in entries if not e.is_control and e.structure is not None]
+    if fp_candidates:
+        all_target_residues = [
+            r[1]
+            for e in fp_candidates
+            for r in e.structure.interface_residues
+            if r[0] == "A"
+        ]
+        universe_size = max(all_target_residues) if all_target_residues else 0
+        if universe_size > 0:
+            from dataclasses import replace as _dc_replace
+            from tools.fingerprint import cluster_fingerprints, make_fingerprint
+
+            fps = [
+                fp for e in fp_candidates
+                if (fp := make_fingerprint(e.peptide_id, e.structure, universe_size=universe_size))
+                is not None
+            ]
+            if fps:
+                cluster_map = cluster_fingerprints(fps)
+                entries = [
+                    _dc_replace(e, epitope_cluster=cluster_map[e.peptide_id])
+                    if e.peptide_id in cluster_map else e
+                    for e in entries
+                ]
+
     return PanelReportInputs(
         target_id=target_id,
         task_description=task_description,

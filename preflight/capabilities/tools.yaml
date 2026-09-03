@@ -399,3 +399,26 @@
     scan: data_ala_scan_result   # populated by tool_rosetta_alanine_scan's output_map
     plddt_pdb: data_pdb_file      # B5 refines this to data_pdb_unrelaxed (Amber zeroes B-factors)
   # Terminal: list[ConfidentHotSpot] is read from job.results["tool_rosetta_confidence_filter"].
+
+# ---- Negative controls ----
+
+- id: tool_scrambled_controls
+  label: Scrambled control peptide generator
+  tier: 1
+  definition: >
+    Generates composition-matched scrambled controls (same AA composition, shuffled
+    order) for each test peptide. Preserves length, charge, hydrophobicity, and disorder
+    propensity — only sequence-specific binding is tested. Used to establish a per-panel
+    null distribution so composite_score can be expressed as a z-score.
+  subtask:
+    - subtask_negative_controls
+  has_input:
+    - data_aa_sequence
+  has_output:
+    - data_aa_sequence
+  wrapper: tools.controls.make_scrambled_controls
+  invocation: python_api
+  notes: >
+    Injected into predict_panel() via with_controls=True. Control IDs follow
+    {peptide_id}__scram{k}. z-scores computed in build_panel_report_inputs();
+    rendered in the "Selectivity vs Scrambled Controls" section of the panel report.

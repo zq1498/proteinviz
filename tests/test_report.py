@@ -442,34 +442,109 @@ def _entry_full(peptide_id: str) -> PanelEntry:
     )
 
 
-def test_panel_per_complex_notes_shows_disorder():
+def test_panel_per_complex_notes_renders_disorder_cider_and_hotspots():
     inp = PanelReportInputs(
         target_id="T", task_description="t",
         complexes=[_entry_full("p0")],
     )
-    report = render_panel_report(inp)
-    notes = report.split("Per-Complex Notes")[1]
+    notes = render_panel_report(inp).split("Per-Complex Notes")[1]
     assert "iupred3" in notes
     assert "metapredict" in notes
-
-
-def test_panel_per_complex_notes_shows_cider():
-    inp = PanelReportInputs(
-        target_id="T", task_description="t",
-        complexes=[_entry_full("p0")],
-    )
-    report = render_panel_report(inp)
-    notes = report.split("Per-Complex Notes")[1]
     assert "κ" in notes
     assert "FCR" in notes
-
-
-def test_panel_per_complex_notes_shows_hotspots():
-    inp = PanelReportInputs(
-        target_id="T", task_description="t",
-        complexes=[_entry_full("p0")],
-    )
-    report = render_panel_report(inp)
-    notes = report.split("Per-Complex Notes")[1]
     assert "hotspots" in notes
     assert "A5 TRP" in notes
+
+
+# ---------------------------------------------------------------------------
+# Epitope families (Pass 1 — contact fingerprints, no pLDDT gating)
+# ---------------------------------------------------------------------------
+
+def _entry_with_epitope(peptide_id: str, cluster: str | None) -> PanelEntry:
+    return PanelEntry(
+        peptide_id=peptide_id,
+        metrics=_metric(peptide_id, mean_plddt=80.0, actifptm=0.90, iptm=0.85),
+        label=peptide_id,
+        epitope_cluster=cluster,
+    )
+
+
+def test_render_panel_report_epitope_column_in_ranked_table():
+    inp = PanelReportInputs(
+        target_id="T", task_description="t",
+        complexes=[
+            _entry_with_epitope("p0", "Epitope-1"),
+            _entry_with_epitope("p1", "Epitope-2"),
+        ],
+    )
+    report = render_panel_report(inp)
+    assert "Epitope" in report.split("## 3. Ranked Binders")[1].split("## 4.")[0]
+
+
+def test_render_panel_report_epitope_families_section_present():
+    inp = PanelReportInputs(
+        target_id="T", task_description="t",
+        complexes=[
+            _entry_with_epitope("p0", "Epitope-1"),
+            _entry_with_epitope("p1", "Epitope-1"),
+            _entry_with_epitope("p2", "Epitope-2"),
+        ],
+    )
+    report = render_panel_report(inp)
+    assert "## 4. Epitope Families" in report
+    families = report.split("## 4. Epitope Families")[1].split("## 5.")[0]
+    assert "Epitope-1" in families
+    assert "Epitope-2" in families
+    assert "p0" in families and "p1" in families
+
+
+def test_render_panel_report_no_epitope_section_without_clusters():
+    inp = PanelReportInputs(
+        target_id="T", task_description="t",
+        complexes=[_entry("p0", 80.0, 0.90, 0.85), _entry("p1", 60.0, 0.55, 0.50)],
+    )
+    report = render_panel_report(inp)
+    assert "Epitope Families" not in report
+    assert "## 4. Per-Complex Notes" in report
+
+
+def test_render_panel_report_section_renumbering_with_epitopes_only():
+    """With epitopes but no controls: §5 Per-Complex Notes, §8 Raw Output."""
+    inp = PanelReportInputs(
+        target_id="T", task_description="t",
+        complexes=[
+            _entry_with_epitope("p0", "Epitope-1"),
+            _entry_with_epitope("p1", "Epitope-2"),
+        ],
+    )
+    report = render_panel_report(inp)
+    assert "## 5. Per-Complex Notes" in report
+    assert "## 8. Raw Output Locations" in report
+    assert "## 4. Per-Complex Notes" not in report
+
+
+def test_render_panel_report_section_renumbering_with_epitopes_and_controls():
+    """With both: §4 Epitope Families, §5 Controls, §6 Per-Complex Notes, §9 Raw Output."""
+    inp = PanelReportInputs(
+        target_id="T", task_description="t",
+        complexes=[
+            PanelEntry(
+                peptide_id="p0",
+                metrics=_metric("p0", mean_plddt=80.0, actifptm=0.90, iptm=0.85),
+                label="p0",
+                epitope_cluster="Epitope-1",
+                null_mean=0.45, null_sd=0.05, z_score=2.5,
+            ),
+            PanelEntry(
+                peptide_id="p0__scram0",
+                metrics=_metric("p0__scram0", mean_plddt=50.0, actifptm=0.40, iptm=0.35),
+                label="p0__scram0",
+                is_control=True,
+            ),
+        ],
+    )
+    report = render_panel_report(inp)
+    assert "## 4. Epitope Families" in report
+    assert "## 5. Selectivity vs Scrambled Controls" in report
+    assert "## 6. Per-Complex Notes" in report
+    assert "## 9. Raw Output Locations" in report

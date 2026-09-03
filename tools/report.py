@@ -5,9 +5,10 @@ the report format specified in CLAUDE.md:
   1. Executive summary
   2. Methods
   3. Per-complex results table
-  4. Flagged observations
-  5. Suggested follow-up
-  6. Raw output locations
+  4. Structural analysis
+  5. Flagged observations
+  6. Suggested follow-up
+  7. Raw output locations
 """
 
 from __future__ import annotations
@@ -359,6 +360,7 @@ class PanelEntry:
     disorder_metapredict: list[float] | None = None       # from tool_metapredict
     cider: CIDERFeatures | None = None                    # from tool_localcider
     hotspots: list[ConfidentHotSpot] | None = None        # from tool_rosetta_confidence_filter
+    epitope_cluster: str | None = None                    # from tools.fingerprint.cluster_fingerprints
 
 
 @dataclass
@@ -438,12 +440,32 @@ def render_panel_report(inp: PanelReportInputs) -> str:
         lines.append("_No methods recorded._")
     lines.append("")
 
-    lines += [
-        "## 3. Ranked Binders",
-        "",
-        "| Rank | Peptide | Composite | ipTM | actifpTM | Mean pLDDT | Peptide-chain pLDDT | BSA (Å²) | Interface res |",
-        "|------|---------|-----------|------|----------|------------|---------------------|----------|---------------|",
-    ]
+    has_epitopes = any(e.epitope_cluster is not None for e in ranked)
+    ep_offset = 1 if has_epitopes else 0
+    has_zscore = any(e.z_score is not None for e in ranked)
+    zscore_offset = 1 if has_zscore else 0
+    total_offset = ep_offset + zscore_offset
+
+    if has_epitopes:
+        tbl_header = (
+            "| Rank | Peptide | Epitope | Composite | ipTM | actifpTM |"
+            " Mean pLDDT | Peptide-chain pLDDT | BSA (Å²) | Interface res |"
+        )
+        tbl_sep = (
+            "|------|---------|---------|-----------|------|----------|"
+            "------------|---------------------|----------|---------------|"
+        )
+    else:
+        tbl_header = (
+            "| Rank | Peptide | Composite | ipTM | actifpTM |"
+            " Mean pLDDT | Peptide-chain pLDDT | BSA (Å²) | Interface res |"
+        )
+        tbl_sep = (
+            "|------|---------|-----------|------|----------|"
+            "------------|---------------------|----------|---------------|"
+        )
+
+    lines += ["## 3. Ranked Binders", "", tbl_header, tbl_sep]
     for i, e in enumerate(ranked, 1):
         m = e.metrics
         cs = composite_score(m, **kw)
@@ -455,16 +477,31 @@ def render_panel_report(inp: PanelReportInputs) -> str:
             else "—"
         )
         n_iface = str(len(e.structure.interface_residues)) if e.structure else "—"
+        epitope_col = f" {e.epitope_cluster or '—'} |" if has_epitopes else ""
         lines.append(
-            f"| {i} | {e.label or e.peptide_id} | {cs:.3f} | {iptm} | {actifptm} |"
+            f"| {i} | {e.label or e.peptide_id} |{epitope_col} {cs:.3f} | {iptm} | {actifptm} |"
             f" {m.mean_plddt:.1f} | {_peptide_chain_plddt(m)} | {bsa} | {n_iface} |"
         )
     lines.append("")
 
-    has_zscore = any(e.z_score is not None for e in ranked)
-    sec_offset = 1 if has_zscore else 0
+    if has_epitopes:
+        from collections import defaultdict
+        lines += ["## 4. Epitope Families", ""]
+        clusters: dict[str, list[str]] = defaultdict(list)
+        for e in ranked:
+            clusters[e.epitope_cluster or "Unassigned"].append(e.label or e.peptide_id)
+        for cluster_id, members in sorted(clusters.items()):
+            lines.append(f"- **{cluster_id}** ({len(members)} peptide(s)): {', '.join(members)}")
+        lines += [
+            "",
+            "_Clusters: single-linkage hierarchical clustering on binary target-contact "
+            "fingerprints (Jaccard distance threshold 0.3). Same cluster = overlapping "
+            "epitopes; different clusters = distinct binding sites._",
+            "",
+        ]
+
     if has_zscore:
-        lines += ["## 4. Selectivity vs Scrambled Controls", ""]
+        lines += [f"## {4 + ep_offset}. Selectivity vs Scrambled Controls", ""]
         lines += [
             "| Peptide | Composite | Null Mean | Null SD | Z-score |",
             "|---------|-----------|-----------|---------|---------|",
@@ -477,7 +514,7 @@ def render_panel_report(inp: PanelReportInputs) -> str:
             lines.append(f"| {e.label or e.peptide_id} | {cs:.3f} | {null_mean} | {null_sd} | {z} |")
         lines.append("")
 
-    lines += [f"## {4 + sec_offset}. Per-Complex Notes", ""]
+    lines += [f"## {4 + total_offset}. Per-Complex Notes", ""]
     notes_written = False
     for e in ranked:
         bits: list[str] = []
@@ -486,7 +523,6 @@ def render_panel_report(inp: PanelReportInputs) -> str:
             bits.append(f"disulfides {pairs}")
         if e.sequence and e.sequence.flags:
             bits.append("; ".join(e.sequence.flags))
-        # Disorder: iupred3 and/or metapredict shown separately when both ran
         for source, scores in [("iupred3", e.disorder_iupred3), ("metapredict", e.disorder_metapredict)]:
             if scores is not None:
                 mean_d = sum(scores) / len(scores)
@@ -517,15 +553,15 @@ def render_panel_report(inp: PanelReportInputs) -> str:
         if warning is not None:
             auto_flags.append(warning + " This applies to every 3+ chain complex in this panel.")
             break
-    lines += [f"## {5 + sec_offset}. Flagged Observations", ""]
+    lines += [f"## {5 + total_offset}. Flagged Observations", ""]
     lines += [f"- {f}" for f in auto_flags] if auto_flags else ["_No flags raised._"]
     lines.append("")
 
-    lines += [f"## {6 + sec_offset}. Suggested Follow-Up", ""]
+    lines += [f"## {6 + total_offset}. Suggested Follow-Up", ""]
     lines += [f"- {item}" for item in inp.follow_up] if inp.follow_up else ["_None recorded._"]
     lines.append("")
 
-    lines += [f"## {7 + sec_offset}. Raw Output Locations", ""]
+    lines += [f"## {7 + total_offset}. Raw Output Locations", ""]
     paths = dict(inp.output_paths)
     for e in ranked:
         if e.job_dir is not None:

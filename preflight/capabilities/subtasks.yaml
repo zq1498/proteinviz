@@ -63,3 +63,10 @@
   label: Phase separation propensity
   definition: Prediction of liquid-liquid phase separation and condensate involvement.
   parent: subtask_disorder
+
+- id: subtask_negative_controls
+  label: Negative controls
+  definition: >
+    Generation and integration of composition-matched scrambled peptide controls
+    for per-panel null distribution calibration of composite_score.
+  parent: subtask_binding

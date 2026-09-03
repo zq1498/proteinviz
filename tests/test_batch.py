@@ -19,23 +19,13 @@ from tools.batch import _ensure_fasta
 # _ensure_fasta — monomer path
 # ---------------------------------------------------------------------------
 
-def test_ensure_fasta_monomer_creates_file(tmp_path: Path):
-    inputs = {"data_aa_sequence": "MKTAY"}
-    _ensure_fasta(inputs, tmp_path)
-    assert (tmp_path / "input.fasta").exists()
-
-
-def test_ensure_fasta_monomer_correct_format(tmp_path: Path):
-    inputs = {"data_aa_sequence": "MKTAY"}
-    _ensure_fasta(inputs, tmp_path)
-    content = (tmp_path / "input.fasta").read_text()
-    assert content == ">query\nMKTAY\n"
-
-
-def test_ensure_fasta_monomer_sets_fasta_key(tmp_path: Path):
+def test_ensure_fasta_monomer(tmp_path: Path):
     inputs = {"data_aa_sequence": "MKTAY"}
     result = _ensure_fasta(inputs, tmp_path)
-    assert result["data_fasta_file"] == tmp_path / "input.fasta"
+    fasta = tmp_path / "input.fasta"
+    assert fasta.exists()
+    assert fasta.read_text() == ">query\nMKTAY\n"
+    assert result["data_fasta_file"] == fasta
 
 
 # ---------------------------------------------------------------------------
