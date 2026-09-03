@@ -1,0 +1,747 @@
+# papers_index.yaml
+# Structured literature index for the protein-viz-suite project.
+# Schema and retrieval instructions: literature/Papers_Index_Guide.md
+
+- doi: "10.3389/fbinf.2022.959160"
+  title: "Improving Peptide-Protein Docking with AlphaFold-Multimer Using Forced Sampling"
+  authors: "Johansson-Åkhe et al."
+  year: 2022
+  filename: "johansson_akhe_2022_forced_sampling_AFM.pdf"
+
+  mechanisms:
+    - "coupled folding upon binding"
+    - "fuzzy complex"
+  system_proteins:
+    - "peptide-protein benchmark complexes"
+  experimental_methods:
+    - "MD simulation"
+
+  key_claims:
+    - "Subsampling MSA depth and dropping templates during AlphaFold-Multimer inference forces exploration of a broader conformational landscape, increasing the probability of sampling near-native poses for short peptides (Fig. 2)"
+    - "Aggregating scores across ≥25 randomly seeded models with varied MSA depth yields better discrimination between true binders and non-binders than relying on the single top-ranked model from a default 5-model run"
+    - "Forced sampling gains are largest for peptides shorter than ~20 residues, where the default MSA-constrained sampling tends to collapse into a single low-diversity ensemble"
+
+  design_implications:
+    - "Generate at least 25 models per complex with MSA subsampling enabled; a single 5-model AF-Multimer run undersamples conformational space for short peptides"
+    - "Use the mean or median ipTM across the model ensemble rather than the max; max-scoring single models have higher false positive rate"
+    - "Score variance across the ensemble is itself a signal — high variance with high mean is a red flag; confident true binders show consistent high scores across replicates"
+
+  cites_in_project: []
+
+- doi: "10.1093/bioinformatics/btad424"
+  title: "Evaluation of AlphaFold-Multimer Prediction on Multi-Chain Protein Complexes"
+  authors: "Zhu et al."
+  year: 2023
+  filename: "zhu_2023_AFM_multimer_evaluation.pdf"
+
+  mechanisms:
+    - "coupled folding upon binding"
+    - "induced fit"
+  system_proteins:
+    - "benchmark heterodimeric complexes"
+    - "benchmark homodimeric complexes"
+  experimental_methods:
+    - "X-ray crystallography"
+    - "cryo-EM"
+
+  key_claims:
+    - "ipTM is the single most predictive AFM confidence metric for complex-level structural accuracy across a benchmark of ~700 multi-chain assemblies; ipTM ≥ 0.75–0.8 corresponds to correct interface topology in the majority of cases (Table 2)"
+    - "Interface pLDDT provides complementary information to ipTM and their combination modestly outperforms either metric alone in distinguishing correct from incorrect models"
+    - "Optimal ipTM threshold differs between homo- and heterodimers; applying a single global threshold introduces systematic errors for one class"
+
+  design_implications:
+    - "Use ipTM ≥ 0.75 as a minimum screening cutoff for heterodimeric peptide-protein complexes; ipTM thresholds established on balanced benchmarks may need recalibration on peptide-specific datasets"
+    - "Do not use ipTM alone as a binary accept/reject gate; combining ipTM with interface pLDDT reduces false positives without substantially increasing false negatives"
+    - "Benchmark-derived thresholds are population statistics; a single complex with ipTM = 0.74 is not categorically different from one at 0.76 — treat thresholds as soft filters, not hard decisions"
+
+  cites_in_project: []
+
+- doi: "10.1093/bioinformatics/btaf107"
+  title: "actifpTM: A Refined Confidence Metric of AlphaFold2 Predictions Involving Flexible Regions"
+  authors: "Varga et al."
+  year: 2025
+  filename: "varga_2025_actifptm.pdf"
+
+  mechanisms:
+    - "fuzzy complex"
+    - "motif remains disordered"
+    - "coupled folding upon binding"
+  system_proteins:
+    - "MDM2"
+    - "p53 transactivation domain"
+    - "PCNA"
+    - "peptide-protein complexes with disordered flanking regions"
+  experimental_methods:
+    - "MD simulation"
+
+  key_claims:
+    - "actifpTM restricts the ipTM calculation to the active interface region (residues within a distance cutoff of the binding partner), eliminating the signal dilution caused by disordered N/C-terminal flanks that are present but non-contacting (Fig. 1)"
+    - "For peptide-protein complexes where the peptide contains flexible extensions, actifpTM is a substantially better discriminator of true binders from non-binders than raw ipTM; the improvement is largest when the disordered portion exceeds ~30% of peptide length"
+    - "actifpTM > 0.9 on the focused interface region provides higher precision than ipTM > 0.8 for peptides with disordered flanking regions; at matched recall, actifpTM reduces false positive rate by approximately 2-fold"
+
+  design_implications:
+    - "Use actifpTM as the primary per-complex confidence metric when any peptide in the dataset has disordered flanking regions; ipTM alone systematically underestimates interface quality in this setting"
+    - "A large discrepancy between ipTM and actifpTM (>0.1) is a direct diagnostic for flanking-region signal dilution — actifpTM is the more trustworthy number in that case"
+    - "When computing the composite score, weight actifpTM more heavily than ipTM for peptides longer than ~25 residues; the improvement from focused scoring increases with peptide length"
+
+  cites_in_project: []
+
+- doi: "10.1021/acschembio.4c00418"
+  title: "AlphaFold Ensemble Competition Screens Enable Peptide Binder Design with Single-Residue Sensitivity"
+  authors: "Vosbein et al."
+  year: 2024
+  filename: "vosbein_2024_ensemble_competition_peptide.pdf"
+
+  mechanisms:
+    - "coupled folding upon binding"
+    - "hydrophobic anchor"
+    - "electrostatic steering"
+  system_proteins:
+    - "SH2 domain"
+    - "peptide binder benchmark complexes"
+  experimental_methods:
+    - "fluorescence anisotropy"
+    - "MD simulation"
+
+  key_claims:
+    - "Ensemble competition — scoring each candidate peptide against the same target alongside shuffled/scrambled variants in the same AF-Multimer run — dramatically reduces false positive rate compared to ranking by absolute ipTM (Fig. 2)"
+    - "Competition-normalized scores can resolve single-residue substitution effects that are invisible in absolute ipTM rankings; validated on SH2 domain binders where experimental Kd differences of 2–5-fold correlated with competition score differences (Fig. 3)"
+    - "Shuffled peptides with matched amino acid composition but scrambled sequence serve as effective per-candidate null sequences; this controls for compositional bias without requiring independent negative data"
+
+  design_implications:
+    - "Implement a competition-based null distribution by folding each candidate against its amino-acid-shuffled permutations; the competition score (candidate ipTM minus mean permuted ipTM) is more informative than raw ipTM for ranking binders"
+    - "At least 5–10 shuffled permutations per candidate are needed to estimate the null mean reliably; 20+ permutations stabilize the standard deviation estimate and support p-value computation"
+    - "Do not rank candidates from different amino acid compositions directly by absolute ipTM; competition normalization removes composition-driven score inflation that would otherwise bias rankings toward charged or aromatic-rich peptides"
+
+  cites_in_project: []
+
+- doi: "10.1093/nar/gkz368"
+  title: "Protein Interaction Z Score Assessment (PIZSA): An Empirical Scoring Scheme for Evaluation of Protein-Protein Interactions"
+  authors: "Roy et al."
+  year: 2019
+  filename: "roy_2019_PIZSA.pdf"
+
+  mechanisms:
+    - "hydrophobic anchor"
+    - "electrostatic steering"
+    - "aromatic stacking"
+  system_proteins:
+    - "benchmark PDB biological interfaces"
+    - "crystal contact non-biological interfaces"
+  experimental_methods:
+    - "X-ray crystallography"
+
+  key_claims:
+    - "PIZSA Z-scores computed against a background distribution of non-biological crystal contact interfaces outperform raw pairwise interaction scores in distinguishing biological from non-biological PPIs across a benchmark of >2,000 complexes (Table 1)"
+    - "The background distribution is empirically parameterized on crystal contacts extracted from PDB entries marked as non-biological assemblies; this provides a data-driven null that is closer to the test distribution than random decoys"
+    - "PIZSA Z-scores correlate modestly with experimental binding affinities for well-curated benchmark sets (Pearson r ~0.5); the score is more reliable for binary classification (binder/non-binder) than for affinity ranking"
+
+  design_implications:
+    - "Z-score normalization against a background null distribution is more informative than raw interface scores; parameterize the null from shuffled or permuted complexes rather than arbitrary random conformations"
+    - "A Z-score > 1.5–2.0 relative to the background distribution is a reasonable threshold for classifying a complex as specifically folded; apply this framing when designing composite score cutoffs"
+    - "The PIZSA precedent supports using empirically derived (not theoretical) null distributions; collect scrambled-peptide AF-Multimer outputs as the background rather than assuming a parametric null"
+
+  cites_in_project: []
+
+- doi: "10.1093/bioinformatics/btaa207"
+  title: "A Knowledge-Based Scoring Function to Assess Quaternary Associations of Proteins"
+  authors: "Dhawanjewar et al."
+  year: 2020
+  filename: "dhawanjewar_2020_quaternary_scoring.pdf"
+
+  mechanisms:
+    - "hydrophobic anchor"
+    - "electrostatic steering"
+  system_proteins:
+    - "benchmark PDB quaternary assemblies"
+    - "homo-oligomeric complexes"
+    - "hetero-oligomeric complexes"
+  experimental_methods:
+    - "X-ray crystallography"
+    - "cryo-EM"
+
+  key_claims:
+    - "A knowledge-based potential trained on known biological quaternary contacts vs. crystal-packing artifacts achieves better discrimination than geometric scoring alone, with AUC > 0.85 on held-out benchmark sets (Table 3)"
+    - "The scoring function is parameterized on residue-residue contact propensities at quaternary interfaces, with separate statistics for homo- and hetero-assemblies; pooling the two classes degrades performance"
+    - "Complementary to PIZSA (see [[roy_2019_PIZSA.pdf]]): PIZSA addresses interface quality from pairwise interaction energetics; this work addresses assembly-level geometric and compositional features"
+
+  design_implications:
+    - "Knowledge-based scores are orthogonal to AF-confidence metrics and provide complementary discriminating power; integrating both in the composite score is better than either alone"
+    - "Separate training statistics for homo- and heterodimers indicate that a single composite score model cannot be applied uniformly across assembly types; flag when the target-peptide complex is better modeled as a heterodimer vs. homodimer"
+
+  cites_in_project: []
+
+- doi: "10.1111/cbdd.13453"
+  title: "Improving Inverse Docking Target Identification with Z-Score Selection"
+  authors: "Kim et al."
+  year: 2019
+  filename: "kim_2019_inverse_docking_zscore.pdf"
+
+  mechanisms:
+    - "induced fit"
+    - "hydrophobic anchor"
+  system_proteins:
+    - "FDA-approved drug target panel"
+    - "diverse receptor benchmark"
+  experimental_methods:
+    - "X-ray crystallography"
+
+  key_claims:
+    - "Per-target Z-score normalization (each ligand's docking score expressed relative to the score distribution of that ligand across all targets) outperforms global Z-score normalization for identifying the correct target in inverse docking, with top-1 accuracy improving by 12–18% (Table 2)"
+    - "Global null distributions conflate target-specific score variance with global population variance; per-target normalization isolates selectivity signal by controlling for ligand-specific score inflation or deflation"
+    - "The per-target Z-score transformation is conceptually equivalent to computing 'how much better does this ligand bind this target compared to all other targets?' — a selectivity metric rather than an absolute affinity metric"
+
+  design_implications:
+    - "When screening a peptide panel against multiple targets, compute per-peptide Z-scores (each peptide's composite score relative to its distribution across all targets) to identify selectively binding peptides; absolute composite scores conflate affinity with peptide-level scoring bias"
+    - "Per-target normalization is preferable to global normalization when the composite score variance differs substantially across targets — which is expected for targets with different binding pocket geometries"
+
+  cites_in_project: []
+
+- doi: "10.2202/1544-6115.1585"
+  title: "Permutation P-Values Should Never Be Zero: Calculating Exact P-Values When Permutations Are Randomly Drawn"
+  authors: "Phipson et al."
+  year: 2010
+  filename: "phipson_2010_permutation_pvalues.pdf"
+
+  mechanisms:
+    - "statistical / mathematical methodology"
+  system_proteins:
+    - "statistical methodology — no specific protein system"
+  experimental_methods: []
+
+  key_claims:
+    - "Using the formula p = r/B (where r is the number of permutations exceeding the observed statistic and B is the total number of permutations) produces p-values of exactly 0 when the observed value exceeds all permutations — a statistically invalid result that overstates significance (Eq. 1)"
+    - "The correct formula is p = (r+1)/(B+1), which bounds the minimum achievable p-value at 1/(B+1); this accounts for the fact that the observed value is itself one realization from the permutation distribution"
+    - "With B = 99 permutations the minimum achievable p-value is 0.01; with B = 999 it is 0.001; the required number of permutations must be chosen before collecting data based on the desired resolution of the p-value"
+
+  design_implications:
+    - "When computing composite score p-values from a shuffled-peptide null distribution, always use p = (r+1)/(B+1); reporting p = 0 from any finite permutation test is incorrect and should be flagged as a pipeline bug"
+    - "Use at least 99 shuffled permutations per candidate to achieve p-value resolution of 0.01; use 999 if single-residue discrimination at p < 0.01 is required — undershooting inflates the apparent significance of borderline cases"
+    - "The minimum p-value is a function of permutation count, not candidate quality; when comparing p-values across candidates with different permutation counts, normalize by the minimum achievable p-value for each"
+
+  cites_in_project: []
+
+- doi: "10.1101/2021.10.04.463034"
+  title: "Protein Complex Prediction with AlphaFold-Multimer"
+  authors: "Evans et al."
+  year: 2022
+  filename: "evans_2022_alphafold_multimer.pdf"
+
+  mechanisms:
+    - "coupled folding upon binding"
+    - "induced fit"
+  system_proteins:
+    - "CASP14 benchmark complexes"
+    - "heterodimeric protein complexes"
+    - "homomeric protein complexes"
+  experimental_methods:
+    - "X-ray crystallography"
+    - "cryo-EM"
+
+  key_claims:
+    - "AFM substantially outperforms AF2 monomer + rigid docking for multi-chain target prediction; the joint MSA and inter-chain attention mechanism enables modeling of co-evolutionary coupling across chains (Fig. 3)"
+    - "ipTM is the primary confidence metric for complex-level accuracy: ipTM measures inter-chain TM-score confidence and is more informative than pTM (which conflates intra- and inter-chain confidence) for ranking complex predictions (Supplementary Methods)"
+    - "ipTM > 0.8 is associated with correct complex topology in CASP14 benchmarks; performance degrades for complexes with large disordered regions or flexible interfaces where the correct structure is not well-represented by a single static model"
+
+  design_implications:
+    - "ipTM is the canonical first-pass metric for ColabFold complex predictions; use ipTM ≥ 0.75–0.8 as a screening threshold, calibrated against target-specific benchmarks rather than applied as an absolute gate"
+    - "pTM is less informative than ipTM for peptide-protein heterodimers; do not substitute pTM for ipTM in the composite score"
+    - "AFM benchmark thresholds were established on structured, globular protein complexes; they require recalibration for peptide-protein interactions where the peptide undergoes disorder-to-order transition and interface pLDDT is lower by construction"
+
+  cites_in_project: []
+
+# === STRUCTURE PREDICTION SOURCE PAPERS ===
+
+- doi: "10.1038/s41586-021-03819-2"
+  title: "Highly Accurate Protein Structure Prediction with AlphaFold"
+  authors: "Jumper et al."
+  year: 2021
+  filename: "jumper_2021_alphafold2.pdf"
+
+  mechanisms:
+    - "coupled folding upon binding"
+    - "statistical / mathematical methodology"
+  system_proteins:
+    - "CASP14 benchmark proteins"
+    - "free-modelling target proteins"
+  experimental_methods:
+    - "X-ray crystallography"
+    - "cryo-EM"
+
+  key_claims:
+    - "AF2 achieves median backbone RMSD of 0.96 Å on CASP14 free-modelling targets, the first system to approach experimental accuracy at scale (Fig. 4)"
+    - "pLDDT is a reliable per-residue confidence metric calibrated as a local distance difference test; values > 70 correlate with backbone placement within ~2 Å of the true structure; values < 50 do not indicate modeling failure but frequently mark intrinsically disordered regions (Extended Data Fig. 9)"
+    - "PAE (predicted aligned error) provides residue-pair positional confidence; high inter-chain PAE indicates uncertain relative domain orientation and is the primary signal for disordered linkers between domains"
+
+  design_implications:
+    - "Do not reject predictions with low-pLDDT regions unconditionally — low pLDDT on the peptide in a complex is expected when the peptide is intrinsically disordered; use it as a calibration signal, not a failure flag"
+    - "PAE heatmaps identify rigid-body domain boundaries and flexible linkers; inspect PAE cross-chain blocks to assess whether the peptide-target interface is confidently placed relative to each other"
+
+  cites_in_project: []
+
+- doi: "10.1038/s41592-022-01488-1"
+  title: "ColabFold: Making Protein Folding Accessible to All"
+  authors: "Mirdita et al."
+  year: 2022
+  filename: "mirdita_2022_colabfold.pdf"
+
+  mechanisms:
+    - "coupled folding upon binding"
+    - "statistical / mathematical methodology"
+  system_proteins:
+    - "CASP14 benchmark proteins"
+    - "peptide-protein complexes"
+    - "homo-oligomeric complexes"
+  experimental_methods:
+    - "X-ray crystallography"
+    - "cryo-EM"
+
+  key_claims:
+    - "ColabFold replaces the original AF2 MSA pipeline (jackhmmer/HHblits, ~4 h) with MMseqs2 server queries (~2 min) while matching or slightly improving prediction accuracy on CASP14 benchmark targets (Fig. 1)"
+    - "ColabFold 1.5+ supports --calc-extra-ptm to output actifpTM in the score JSON; this flag must be set explicitly in the SLURM call — it is not on by default in all versions"
+    - "Increasing the number of recycles from 3 to 12 improves accuracy for hard targets but with diminishing returns; for peptide-protein screening, 3 recycles is an appropriate default and 12 recycles is reserved for final characterization of top hits"
+
+  design_implications:
+    - "For first-pass panel screening, reduce num_models to 3 and num_recycle to 2; apply full 5-model / 3-recycle settings to the top-scoring candidates only to preserve GPU hours"
+    - "actifpTM is only present in the score JSON when CALC_EXTRA_PTM=1 is passed to the SLURM script; if actifpTM is absent from extracted metrics, check the cluster script flag before assuming the peptide has no interface signal"
+
+  cites_in_project: []
+
+- doi: "10.1101/2024.11.19.624167"
+  title: "Boltz-1: Democratizing Biomolecular Interaction Modeling"
+  authors: "Wohlwend et al."
+  year: 2024
+  filename: "wohlwend_2024_boltz1.pdf"
+
+  mechanisms:
+    - "coupled folding upon binding"
+    - "statistical / mathematical methodology"
+  system_proteins:
+    - "PoseBusters benchmark complexes"
+    - "CASP15 target proteins"
+    - "protein-nucleic acid complexes"
+  experimental_methods:
+    - "X-ray crystallography"
+    - "cryo-EM"
+
+  key_claims:
+    - "Boltz-1 achieves AlphaFold3-level accuracy on the PoseBusters protein-ligand benchmark and on protein-protein complex prediction, as the first fully open-source model in this accuracy class (Table 1)"
+    - "Boltz-1 natively handles proteins, nucleic acids, small molecules, and covalent modifications in a unified model; it does not require separate docking steps or modified FASTA encoding for non-standard residues"
+    - "Boltz-1 outputs a confidence JSON with structure analogous to ColabFold — per-residue pLDDT, PAE, and ipTM-like complex confidence — but with different field names and normalization; tool_boltz1 requires its own output parser separate from extract_colabfold"
+
+  design_implications:
+    - "Use Boltz-1 as the fallback backend when ColabFold confidence is low due to poor MSA coverage, or when the peptide contains non-standard residues or covalent modifications that ColabFold cannot model"
+    - "Do not compare raw confidence scores across ColabFold and Boltz-1 outputs without backend-specific recalibration; the models use different training objectives and score normalizations"
+
+  cites_in_project: []
+
+- doi: "10.1126/science.ade2574"
+  title: "Evolutionary-Scale Prediction of Atomic-Level Protein Structure with a Language Model"
+  authors: "Lin et al."
+  year: 2023
+  filename: "lin_2023_esmfold.pdf"
+
+  mechanisms:
+    - "coupled folding upon binding"
+    - "statistical / mathematical methodology"
+  system_proteins:
+    - "CASP14 benchmark proteins"
+    - "metagenomic protein sequences"
+  experimental_methods:
+    - "X-ray crystallography"
+    - "cryo-EM"
+
+  key_claims:
+    - "ESMFold predicts structures from single sequences without MSA construction, using ESM-2 (700 M parameters) as an embedding backbone followed by a folding trunk; inference is ~60× faster than AF2+MSA for monomers (Fig. 2)"
+    - "On CASP14 free-modelling targets ESMFold ranks behind AF2 by ~10–15% TM-score; the gap is largest for remote-homolog proteins where MSA co-evolutionary signals carry information not captured by language model embeddings alone"
+    - "ESMFold does not support multimer complex prediction and produces no ipTM, actifpTM, or inter-chain PAE; it is a monomer-only predictor"
+
+  design_implications:
+    - "Use ESMFold only for monomer sanity checks or when all MSA search attempts fail; it is not a substitute for ColabFold for peptide-protein complex assessment"
+    - "ESMFold pLDDT values for disordered regions trend higher than ColabFold for the same sequence; do not compare pLDDT thresholds across backends"
+
+  cites_in_project: []
+
+# === STRUCTURAL ANALYSIS SOURCE PAPERS ===
+
+- doi: "10.12688/f1000research.7931.1"
+  title: "FreeSASA: An Open Source C Library for Solvent Accessible Surface Area Calculations"
+  authors: "Mitternacht et al."
+  year: 2016
+  filename: "mitternacht_2016_freesasa.pdf"
+
+  mechanisms:
+    - "statistical / mathematical methodology"
+  system_proteins:
+    - "benchmark PDB protein structures"
+  experimental_methods:
+    - "X-ray crystallography"
+
+  key_claims:
+    - "FreeSASA implements both Shrake-Rupley (sphere-point) and Lee-Richards (rolling-probe) SASA algorithms in C with Python bindings; for a 300-residue protein both algorithms agree to within ~1% and complete in under 100 ms"
+    - "The Python structureArray API enables simultaneous SASA calculation on isolated chains and the complex without writing intermediate PDB files, which is required for correct buried surface area (BSA = SASA_A + SASA_B − SASA_AB) computation"
+    - "BSA calculations are only correct when all three SASA values (chain A isolated, chain B isolated, and the complex) are computed with the same probe radius and vdW parameter set; mixing radii introduces systematic error"
+
+  design_implications:
+    - "BSA > ~600 Å² is the commonly cited threshold for a meaningful interface; for peptides shorter than ~10 residues BSA will often fall below this — report BSA but do not use it as a hard filter for short peptides"
+    - "Always pass the complex PDB to structureArray rather than running separate single-chain calculations to guarantee probe-radius consistency across the BSA subtraction"
+
+  cites_in_project: []
+
+- doi: "10.1002/bip.360221211"
+  title: "Dictionary of Protein Secondary Structure: Pattern Recognition of Hydrogen-Bonded and Geometrical Features"
+  authors: "Kabsch et al."
+  year: 1983
+  filename: "kabsch_sander_1983_dssp.pdf"
+
+  mechanisms:
+    - "statistical / mathematical methodology"
+  system_proteins:
+    - "benchmark PDB protein structures"
+  experimental_methods:
+    - "X-ray crystallography"
+
+  key_claims:
+    - "DSSP defines secondary structure from backbone hydrogen bond patterns and dihedral angles; the 8-class scheme (H α-helix, G 3-10 helix, I π-helix, E β-strand, B β-bridge, T turn, S bend, C coil) remains the field standard for secondary structure annotation"
+    - "DSSP hydrogen bond identification uses an electrostatic model with a 0.5 kcal/mol energy threshold; the algorithm is sensitive to backbone coordinate precision and performs poorly on structures with incomplete side chains or missing residue coordinates"
+    - "DSSP RSA (relative solvent accessibility) is normalized against a Gly-X-Gly reference; RSA < 0.25 = buried, RSA > 0.40 = surface-exposed — these thresholds define interface core vs. rim when classifying hot spot residues"
+
+  design_implications:
+    - "Do not apply DSSP to unrelaxed ColabFold predictions; the unrelaxed backbone geometry contains steric clashes that corrupt the hydrogen bond network — Amber relaxation is required before reliable secondary structure assignment"
+    - "Use DSSP RSA thresholds to classify interface residues as core (RSA < 0.25) vs. rim when interpreting alanine scan results; core hot spots are more interpretable and experimentally reliable than rim predictions"
+
+  cites_in_project: []
+
+- doi: "10.1002/prot.20264"
+  title: "Scoring Function for Automated Assessment of Protein Structure Template Quality"
+  authors: "Zhang et al."
+  year: 2004
+  filename: "zhang_skolnick_2004_tmscore.pdf"
+
+  mechanisms:
+    - "statistical / mathematical methodology"
+  system_proteins:
+    - "CASP benchmark proteins"
+    - "SCOP structural classification benchmark"
+  experimental_methods:
+    - "X-ray crystallography"
+
+  key_claims:
+    - "TM-score is a length-normalized structural similarity metric [0, 1]; the length-normalization makes it protein-size-independent in a way that RMSD is not — a 500-residue protein and a 50-residue peptide can be meaningfully compared (Eq. 2)"
+    - "TM-score > 0.5 indicates that two structures share the same global topology with probability > 90%; TM-score < 0.2 corresponds to randomly related structures (Table 2)"
+    - "TM-score is insensitive to locally erroneous loops or termini; a structure with a correct core and a misplaced loop will have high TM-score but elevated RMSD — this makes TM-score preferable for assessing overall fold quality from predicted structures"
+
+  design_implications:
+    - "Use TM-score (not RMSD) as the primary metric when comparing ColabFold predictions to experimental reference structures; TM-score > 0.7 indicates confident global structural agreement"
+    - "TM-score > 0.5 as a pass/fail threshold for 'same fold'; structures below this threshold should not be used as templates for downstream interface analysis without manual inspection"
+
+  cites_in_project: []
+
+- doi: "10.1093/nar/gki524"
+  title: "TM-align: A Protein Structure Alignment Algorithm Based on the TM-score"
+  authors: "Zhang et al."
+  year: 2005
+  filename: "zhang_skolnick_2005_tmalign.pdf"
+
+  mechanisms:
+    - "statistical / mathematical methodology"
+  system_proteins:
+    - "SCOP structural domain benchmark"
+    - "CASP benchmark proteins"
+  experimental_methods:
+    - "X-ray crystallography"
+
+  key_claims:
+    - "TM-align is a sequence-order-independent structural alignment algorithm that optimizes TM-score directly, outperforming CE and DALI in benchmark pairwise comparisons (Table 1)"
+    - "TM-align identifies the optimal rotation/translation and residue mapping simultaneously without requiring an initial sequence alignment; it handles circular permutations and domain swaps that sequential alignment misses"
+    - "tmtools returns two TM-scores: one normalized by the predicted structure length (tmscore_pred) and one by the reference length (tmscore_ref); these answer different questions — 'how much of the prediction is correct?' vs. 'how much of the reference is recapitulated?'"
+
+  design_implications:
+    - "When comparing ColabFold predictions to PDB references, use tmscore_ref (normalized by reference length) as the primary metric; tmscore_pred is the right choice when comparing two predictions of equal length to each other"
+    - "For wild-type vs. mutant comparisons, tmscore_pred divergence > 0.1 indicates the interface geometry has shifted and warrants structural inspection before interpreting ΔΔG differences"
+
+  cites_in_project: []
+
+- doi: "10.1016/j.jmb.2007.05.022"
+  title: "Inference of Macromolecular Assemblies from Crystalline State"
+  authors: "Krissinel et al."
+  year: 2007
+  filename: "krissinel_henrick_2007_pisa.pdf"
+
+  mechanisms:
+    - "coupled folding upon binding"
+    - "statistical / mathematical methodology"
+  system_proteins:
+    - "diverse PDB biological assemblies"
+    - "crystal contact interfaces"
+  experimental_methods:
+    - "X-ray crystallography"
+
+  key_claims:
+    - "PISA distinguishes biological interfaces from crystal-packing contacts using interface BSA, solvation free energy gain (ΔiG), and hydrogen bond / salt bridge counts; biological interfaces tend to have BSA > 800 Ų and ΔiG < −5 kcal/mol (Fig. 4)"
+    - "ΔiG < 0 alone is insufficient to classify an interface as biological; crystal contacts frequently show small negative ΔiG — the combination of BSA > 800 Ų and ΔiG significance score (ΔiGσ < 0.5) is required (Table 2)"
+    - "PISA predicts the most probable biological assembly state for any crystal form; an asymmetric unit that is a monomer may have a biological homodimer, and vice versa — using the wrong oligomeric state in a ColabFold FASTA degrades ipTM reliability"
+
+  design_implications:
+    - "Before constructing a panel target FASTA, verify the target's biological oligomeric state via PISA or UniProt annotation; a homodimer target must be encoded as two chains (A:B) for ColabFold to model the peptide against the dimer interface correctly"
+    - "Use PISA ΔiGσ as a plausibility check on predicted complexes; ΔiGσ > 0.5 (interface not thermodynamically favorable relative to random) should be flagged alongside ipTM as a corroborating weak-interface signal"
+
+  cites_in_project: []
+
+- doi: "10.1093/nar/gkac439"
+  title: "NetSurfP-3.0: Accurate and Fast Prediction of Protein Structural Features by Protein Language Models"
+  authors: "Høie et al."
+  year: 2022
+  filename: "hoie_2022_netsurfp3.pdf"
+
+  mechanisms:
+    - "statistical / mathematical methodology"
+    - "coupled folding upon binding"
+  system_proteins:
+    - "CASP14 benchmark proteins"
+    - "CB513 secondary structure benchmark"
+  experimental_methods:
+    - "X-ray crystallography"
+    - "NMR"
+
+  key_claims:
+    - "NetSurfP-3 predicts RSA, 3-class and 8-class secondary structure, and disorder from sequence alone using ESM-1b language model embeddings; no MSA is required and inference completes in seconds per sequence (Fig. 1)"
+    - "NetSurfP-3 outperforms NetSurfP-2.0 on CASP14 RSA prediction; improvement is concentrated in disordered and loop regions where language model embeddings partially compensate for the absence of MSA co-evolutionary signals"
+    - "NetSurfP-3 disorder scores correlate with IUPred3 (Pearson r ~0.8) but are not identical; the two predictors use orthogonal information sources (statistical language model vs. energy estimation) and disagreements identify marginally stable regions"
+
+  design_implications:
+    - "Use NetSurfP-3 as a rapid pre-flight secondary structure and disorder check when MSA generation is too slow or when iterating over large libraries before committing to ColabFold runs"
+    - "Where NetSurfP-3 disorder score and IUPred3 disagree significantly (Δ > 0.3), flag the region as having context-dependent disorder — the true propensity depends on sequence context neither predictor fully captures alone"
+
+  cites_in_project: []
+
+- doi: "10.1186/s12859-018-2367-z"
+  title: "Biotite: A Unifying Open Source Computational Biology Framework in Python"
+  authors: "Kunzmann et al."
+  year: 2018
+  filename: "kunzmann_2018_biotite.pdf"
+
+  mechanisms:
+    - "statistical / mathematical methodology"
+  system_proteins:
+    - "diverse PDB protein structures"
+  experimental_methods:
+    - "X-ray crystallography"
+
+  key_claims:
+    - "Biotite represents structures as NumPy atom arrays rather than nested Python objects; atom-level operations (distance matrices, contact detection, SASA, secondary structure assignment) run 10–100× faster than equivalent Biopython operations (Table 1)"
+    - "Biotite's secondary structure assignment uses DSSP-equivalent hydrogen bond criteria and produces output numerically consistent with mkdssp binary results for backbone-resolved structures"
+    - "Biotite parses PDB and mmCIF formats, supports trajectory analysis, and integrates directly with SciPy and matplotlib; it is a comprehensive alternative to Biopython without additional dependencies"
+
+  design_implications:
+    - "Prefer Biotite over Biopython for performance-critical structural analysis steps (contact maps, distance matrices, large-batch interface residue detection); the NumPy-native API eliminates Python-level object iteration"
+    - "If custom structural analysis beyond FreeSASA and DSSP is needed (backbone dihedral computation, H-bond networks, CIF parsing), implement in Biotite rather than building custom Biopython loops"
+
+  cites_in_project: []
+
+# === DISORDER PREDICTION SOURCE PAPERS ===
+
+- doi: "10.1093/nar/gkab408"
+  title: "IUPred3: Prediction of Protein Disorder Enhanced with Unambiguous Experimental Annotation and Visualization"
+  authors: "Mészáros et al."
+  year: 2021
+  filename: "meszaros_2021_iupred3.pdf"
+
+  mechanisms:
+    - "fuzzy complex"
+    - "motif remains disordered"
+    - "coupled folding upon binding"
+  system_proteins:
+    - "DisProt database proteins"
+    - "MDM2"
+    - "p53 transactivation domain"
+    - "ANCHOR2 benchmark binding proteins"
+  experimental_methods:
+    - "NMR"
+    - "SAXS"
+    - "CD"
+
+  key_claims:
+    - "IUPred3 predicts per-residue disorder based on estimated pairwise interaction energies; residues whose local sequence context cannot provide sufficient favorable interactions are predicted disordered; this energy-based approach is physically interpretable and robust to database bias"
+    - "ANCHOR2, integrated in IUPred3, identifies disorder-based binding regions (MoRFs) where transient local structure forms only upon binding a partner; ANCHOR2 sites in a target are candidate binding interfaces not visible in unbound crystal structures (Fig. 2)"
+    - "IUPred3 achieves AUC ~0.87 on the DisProt benchmark; false negatives occur most often for short linear motifs with locally favorable energy profiles embedded in longer disordered regions"
+
+  design_implications:
+    - "Run IUPred3 on the target protein during pre-flight — ANCHOR2 sites identify regions that may bind disordered peptide stretches; this informs which region of the target to focus the interface analysis on"
+    - "Peptide residues scored disordered (IUPred3 > 0.5) that form the active binding interface will dilute standard ipTM; always enable actifpTM via CALC_EXTRA_PTM=1 for such cases"
+
+  cites_in_project: []
+
+- doi: "10.1016/j.cels.2021.08.005"
+  title: "Metapredict: A Fast, Accurate, and Easy-to-Use Predictor of Consensus Disorder and Structure"
+  authors: "Emenecker et al."
+  year: 2021
+  filename: "emenecker_2021_metapredict.pdf"
+
+  mechanisms:
+    - "fuzzy complex"
+    - "motif remains disordered"
+    - "statistical / mathematical methodology"
+  system_proteins:
+    - "DisProt benchmark proteins"
+    - "human proteome large-scale validation"
+  experimental_methods:
+    - "NMR"
+    - "CD"
+
+  key_claims:
+    - "Metapredict is a consensus predictor trained on per-residue scores from multiple existing predictors (IUPred2, ESpritz, SPOT-Disorder); consensus improves robustness to individual predictor false positives and enables consistent large-scale disorder annotation (Fig. 1)"
+    - "Metapredict V3 incorporates protein language model features, substantially improving IDR/folded-domain boundary localization accuracy compared to V1/V2, particularly for short IDRs flanking structured domains"
+    - "Metapredict runs entirely offline with no API dependencies and is designed for batch processing; it is the appropriate choice for DCC SLURM jobs where network access is unavailable"
+
+  design_implications:
+    - "Use metapredict as the primary disorder predictor in DCC SLURM jobs; use IUPred3 locally when ANCHOR2 binding site prediction is also needed"
+    - "When metapredict and IUPred3 disagree on a region (Δ > 0.3), flag it as having context-dependent disorder propensity — the true stability depends on sequence context that neither predictor fully captures alone"
+
+  cites_in_project: []
+
+- doi: "10.1016/j.bpj.2016.11.3200"
+  title: "CIDER: Resources to Analyze Sequence-Ensemble Relationships of Intrinsically Disordered Proteins"
+  authors: "Holehouse et al."
+  year: 2017
+  filename: "holehouse_2017_localcider.pdf"
+
+  mechanisms:
+    - "fuzzy complex"
+    - "counterion release"
+    - "electrostatic steering"
+    - "multivalent SLiMs"
+  system_proteins:
+    - "FUS low-complexity domain"
+    - "hnRNPA1 IDR"
+    - "diverse charged IDR benchmark sequences"
+  experimental_methods:
+    - "SAXS"
+    - "NMR"
+    - "smFRET"
+
+  key_claims:
+    - "κ (kappa) quantifies the patterning of oppositely charged residues; κ near 1 indicates well-segregated charge blocks (tends toward compaction), κ near 0 indicates well-mixed charges (tends toward expansion); κ was validated against explicit-chain MD simulations of model IDR sequences (Fig. 3)"
+    - "FCR (fraction of charged residues) and NCPR (net charge per residue) jointly define the Uversky phase diagram — this two-parameter space predicts whether a sequence is strongly disordered, collapsed-but-disordered, or potentially aggregating; it is the standard pre-flight check for IDR charge behavior"
+    - "SCD (sequence charge decoration) is an alternative to κ that is continuous and sensitive to multi-scale charge patterning; SCD and κ agree for simple sequences but diverge when charges are clustered at one terminus"
+
+  design_implications:
+    - "Compute κ for all peptides during pre-flight; κ > 0.3 combined with FCR > 0.3 identifies charge-segregated sequences prone to compaction rather than productive binding — note in the pre-flight report"
+    - "Peptides with |NCPR| > 0.4 may rely on counterion release for binding to oppositely charged targets; flag for potential ionic-strength dependence in experimental validation (Kd may vary strongly with salt concentration)"
+
+  cites_in_project: []
+
+# === MUTATION AND ENERGY ANALYSIS SOURCE PAPERS ===
+
+- doi: "10.1093/nar/gki387"
+  title: "The FoldX Web Server: An Online Force Field"
+  authors: "Schymkowitz et al."
+  year: 2005
+  filename: "schymkowitz_2005_foldx.pdf"
+
+  mechanisms:
+    - "coupled folding upon binding"
+    - "hydrophobic anchor"
+    - "electrostatic steering"
+  system_proteins:
+    - "barnase-barstar"
+    - "CI2"
+    - "ΔΔG stability benchmark proteins"
+  experimental_methods:
+    - "ITC"
+    - "fluorescence anisotropy"
+
+  key_claims:
+    - "FoldX uses an empirical force field with van der Waals, electrostatics, hydrogen bonding, backbone torsion entropy, and solvation terms; ΔΔG predictions for single-point mutations have RMSD of ~1.0–1.5 kcal/mol against >1000 experimental values (Table 1)"
+    - "FoldX requires an energy-minimized input structure (RepairPDB protocol); unrelaxed structures contain steric clashes that produce systematic ΔΔG overestimates — applying RepairPDB to ColabFold outputs before FoldX runs is mandatory"
+    - "FoldX ΔΔG accuracy degrades for large deletions, disordered interface residues, and multiple simultaneous mutations (>3) where conformational reorganization is not captured by the local optimization"
+
+  design_implications:
+    - "Always run RepairPDB on ColabFold outputs before FoldX analysis; the Amber-relaxed ColabFold PDB is preferable to unrelaxed + RepairPDB when GPU-accelerated relaxation is available"
+    - "Cross-validate FoldX ΔΔG values with PyRosetta alanine scan for interface hot spots; consistent ranking across both methods is a stronger signal than either alone — divergence identifies residues where force field approximations are unreliable"
+
+  cites_in_project: []
+
+- doi: "10.1093/bioinformatics/btq007"
+  title: "PyRosetta: A Script-Based Interface Enabling Flexible New Applications within the Rosetta Versatile Macromolecular Modeling Suite"
+  authors: "Chaudhury et al."
+  year: 2010
+  filename: "chaudhury_2010_pyrosetta.pdf"
+
+  mechanisms:
+    - "statistical / mathematical methodology"
+  system_proteins:
+    - "diverse benchmark protein structures"
+  experimental_methods:
+    - "X-ray crystallography"
+
+  key_claims:
+    - "PyRosetta exposes full Rosetta functionality through Python bindings compiled against the same C++ core; all Rosetta movers, score functions, and pose manipulation operations are accessible without writing C++ protocols"
+    - "PyRosetta results are numerically identical to equivalent Rosetta command-line protocol runs; the Python layer is a thin API wrapper, not a reimplementation"
+    - "PyRosetta 2026.19 requires Python 3.14 (proteinviz_pyrosetta conda env, JHU channel); the version constraint is hard — the subprocess bridge pattern in tools/rosetta.py is required because the main pipeline runs Python 3.12"
+
+  design_implications:
+    - "All new PyRosetta analyses must follow the subprocess bridge pattern: implement in pyrosetta_worker.py (proteinviz_pyrosetta env), expose via a caller function in rosetta.py (proteinviz env); direct import will fail due to the Python version incompatibility"
+    - "PyRosetta energy units are REUs (Rosetta Energy Units), not kcal/mol; approximate conversion is ~1.4 REU/kcal/mol but this is context-dependent — do not compare raw REU values to FoldX kcal/mol without acknowledging the conversion uncertainty"
+
+  cites_in_project: []
+
+- doi: "10.1021/acs.jctc.6b00819"
+  title: "Simultaneous Optimization of Biomolecular Energy Functions on Features from Small Molecules and Macromolecules"
+  authors: "Park et al."
+  year: 2016
+  filename: "park_2016_ref2015.pdf"
+
+  mechanisms:
+    - "coupled folding upon binding"
+    - "hydrophobic anchor"
+    - "statistical / mathematical methodology"
+  system_proteins:
+    - "β3 dataset protein benchmarks"
+    - "small molecule parameterization set"
+    - "protein-protein interface benchmark"
+  experimental_methods:
+    - "X-ray crystallography"
+    - "ITC"
+
+  key_claims:
+    - "REF2015 was simultaneously parameterized on small-molecule thermodynamics and macromolecular benchmarks; improved hydrogen bonding geometry and revised Lennard-Jones potential reduce false-positive clash penalties in near-native structures compared to TALARIS2014 (Table 2)"
+    - "dG_separated (pack_separated=True via InterfaceAnalyzerMover) is the most relevant per-complex energy for peptide-protein binding; total complex energy is dominated by intramolecular terms and poorly correlates with binding affinity"
+    - "dG_separated has a strong residue-count composition bias; longer peptides produce more favorable dG_separated at the same per-residue interface density — normalize by BSA (dG_separated / BSA × 100 Ų) to obtain a length-independent energy density"
+
+  design_implications:
+    - "Use dG_separated (REF2015 REU) as the Rosetta contribution to the composite score, not total complex energy; include BSA normalization when comparing peptides of different lengths"
+    - "If a future PyRosetta upgrade changes the default score function, verify that tools/rosetta.py and pyrosetta_worker.py explicitly load REF2015 by name to avoid silent score-function drift"
+
+  cites_in_project: []
+
+- doi: "10.1073/pnas.202160199"
+  title: "A Simple Physical Model for Binding Energy Hot Spots in Protein-Protein Complexes"
+  authors: "Kortemme et al."
+  year: 2002
+  filename: "kortemme_baker_2002_alascan.pdf"
+
+  mechanisms:
+    - "coupled folding upon binding"
+    - "hydrophobic anchor"
+    - "electrostatic steering"
+  system_proteins:
+    - "barnase-barstar"
+    - "BPTI-trypsin"
+    - "T cell receptor-peptide-MHC"
+    - "Colicin E9-Im9"
+  experimental_methods:
+    - "ITC"
+    - "fluorescence anisotropy"
+    - "SPR"
+
+  key_claims:
+    - "Computational alanine scanning using a simplified Rosetta atomic force field correctly predicts experimental hot spot residues (|ΔΔG| > 2 kcal/mol) in 79% of interface positions tested across four canonical protein-protein complexes (Table 2)"
+    - "Hot spots cluster in the geometric center of the interface ('O-ring' architecture); core hot spots are surrounded by peripheral residues that occlude bulk water and create the hydrophobic microenvironment required for hot spot energetics"
+    - "Charged residue (Asp, Glu, Lys, Arg) hot spot predictions are less reliable than hydrophobic predictions due to imprecise electrostatic modeling at interfaces; treat charged hot spot predictions as lower confidence"
+
+  design_implications:
+    - "Use rigorous=True in alanine_scan() only for final hot spot characterization of top-ranked binders; fast mode is sufficient for relative panel ranking and is ~5× faster per residue"
+    - "Cross-reference alanine scan results with confidence_filter_scan() before reporting; hot spot predictions at pLDDT < 70 residues should be labeled 'uncertain' — coordinate uncertainty of ~2 Å propagates directly into Rosetta energy errors"
+
+  cites_in_project: []
