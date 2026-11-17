@@ -27,7 +27,7 @@ from typing import Any
 from preflight.jobs import BatchResult, Job, JobStep
 from preflight.reasoning import (
     Roadmap, TaskSpec, FeasibilityReport,
-    build_roadmap, estimate_runtime, resolve_wrapper,
+    build_roadmap, lookup_tool, resolve_wrapper,
 )
 
 
@@ -41,6 +41,7 @@ def run_batch(
     *,
     jobs_root: Path = Path("jobs"),
     abort_on_failure: bool = False,
+    outputs_root: Path | None = None,
 ) -> BatchResult:
     """Walk every Job in `roadmap.jobs` through its plan.
 
@@ -52,6 +53,9 @@ def run_batch(
         abort_on_failure: if True, re-raise the first job's exception instead
             of marking failed and continuing. Default False per project policy
             ("flag rather than omit").
+        outputs_root: if set, emit user-facing reports under this directory after
+            the run (one aggregated panel report per target; per-job reports for
+            monomers). If None, run_batch stays side-effect-free apart from jobs_root.
 
     Returns:
         BatchResult with all jobs marked done / skipped / failed.
@@ -84,10 +88,18 @@ def run_batch(
         flush=True,
     )
 
-    return BatchResult(
+    result = BatchResult(
         spec=spec, roadmap=roadmap, jobs=jobs,
         started_at=started, finished_at=finished,
     )
+
+    if outputs_root is not None:
+        paths = emit_reports(
+            result, outputs_root=outputs_root, task_description=spec.objective
+        )
+        print(f"[batch] wrote {len(paths)} report(s) under {outputs_root}/", flush=True)
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -198,15 +210,23 @@ def _run_one_job(job: Job, jobs_root: Path, abort_on_failure: bool) -> None:
     start = time.time()
     try:
         for i, step in enumerate(job.plan):
-            wrapper = resolve_wrapper(step.tool_id)
-            kwargs = _bind_inputs(step, job.inputs, job.job_dir)
-            _log(job, f"step {i + 1}/{len(job.plan)}: {step.tool_id}({_shorten(kwargs)})")
-            result = wrapper(**kwargs)
+            _log(job, f"step {i + 1}/{len(job.plan)}: {step.tool_id}"
+                      f"{' (optional)' if step.optional else ''}")
+            try:
+                wrapper = resolve_wrapper(step.tool_id)
+                kwargs = _bind_inputs(step, job.inputs, job.job_dir)
+                result = wrapper(**kwargs)
+            except Exception as step_err:
+                if step.optional:
+                    # Supplemental step (analysis): log and continue, do not fail the Job.
+                    _log(job, f"optional step {step.tool_id} skipped: "
+                              f"{type(step_err).__name__}: {step_err}")
+                    continue
+                raise
             job.results[step.tool_id] = result
-            _propagate_outputs(job, result)
+            _propagate_outputs(job, step.tool_id, result)
         job.status = "done"
         (job.job_dir / "done.flag").touch()
-        _run_post_plan_analysis(job)
     except Exception as e:
         job.status = "failed"
         job.error = f"{type(e).__name__}: {e}"
@@ -267,47 +287,48 @@ def _ensure_fasta(inputs: dict[str, Any], job_dir: Path) -> dict[str, Any]:
     return inputs
 
 
-def _propagate_outputs(job: Job, result: Any) -> None:
-    """Expose common step outputs as job.inputs entries so later steps can consume them.
+def _propagate_outputs(job: Job, tool_id: str, result: Any) -> None:
+    """Expose a step's outputs as job.inputs entries so later steps can consume them.
 
-    Conservative: handles the cases we know about. Easy to extend as new
-    output shapes appear.
+    Registry-driven: reads the tool's `output_map` (data_* id -> attribute
+    expression) and resolves each expression against the wrapper's return value.
+    A tool with no output_map (analysis tools read straight from job.results)
+    propagates nothing. Behaviour for tool_colabfold matches the previous
+    hardcoded pdb_paths[0] -> data_pdb_complex/data_pdb_file mapping.
     """
-    pdb_paths = getattr(result, "pdb_paths", None)
-    if pdb_paths:
-        # Treat the rank-1 PDB as the canonical output for downstream steps.
-        if "data_pdb_complex" not in job.inputs or job.inputs["data_pdb_complex"] is None:
-            job.inputs["data_pdb_complex"] = pdb_paths[0]
-        if "data_pdb_file" not in job.inputs or job.inputs["data_pdb_file"] is None:
-            job.inputs["data_pdb_file"] = pdb_paths[0]
+    entry = lookup_tool(tool_id)
+    for data_id, expr in entry.get("output_map", {}).items():
+        val = _resolve_output_expr(result, expr)
+        # Skip absent (None) and empty-collection outputs so a step that produced
+        # nothing (e.g. no A3Ms downloaded) does not shadow a value set upstream.
+        if val is None or (isinstance(val, (list, tuple)) and not val):
+            continue
+        job.inputs[data_id] = val
+
+
+def _resolve_output_expr(result: Any, expr: str) -> Any:
+    """Resolve an output_map expression against a wrapper's return value.
+
+    Supports exactly three forms (no eval):
+        "."       -> the whole result object
+        attr      -> getattr(result, attr)
+        attr[0]   -> first element of a list-valued attribute (None if empty)
+    Returns None when an attribute is missing or an indexed list is empty, so
+    the caller can skip propagating absent outputs.
+    """
+    if expr == ".":
+        return result
+    if expr.endswith("[0]"):
+        seq = getattr(result, expr[:-3], None)
+        if seq:
+            return seq[0]
+        return None
+    return getattr(result, expr, None)
 
 
 # ---------------------------------------------------------------------------
-# Post-plan analysis (non-fatal supplemental step)
+# Report adapters
 # ---------------------------------------------------------------------------
-
-def _run_post_plan_analysis(job: Job) -> None:
-    """Call analyze_structure and analyze_sequence after a successful plan.
-
-    Results land in job.results["analyze_structure"] and job.results["analyze_sequence"]
-    so build_report_inputs can pull them into ReportInputs without re-running analysis.
-    Failures are logged and swallowed — analysis is supplemental, not load-bearing.
-    """
-    try:
-        from tools.analyze import analyze_sequence, analyze_structure
-        pdb_path = job.inputs.get("data_pdb_complex") or job.inputs.get("data_pdb_file")
-        if pdb_path is not None:
-            job.results["analyze_structure"] = analyze_structure(Path(pdb_path))
-
-        seqs = job.inputs.get("data_aa_sequence")
-        if seqs is not None:
-            if isinstance(seqs, str):
-                job.results["analyze_sequence"] = analyze_sequence(seqs)
-            elif isinstance(seqs, list):
-                job.results["analyze_sequence"] = [analyze_sequence(s) for s in seqs]
-    except Exception as e:
-        _log(job, f"post-plan analysis skipped: {type(e).__name__}: {e}")
-
 
 def build_report_inputs(
     job: Job,
@@ -320,10 +341,10 @@ def build_report_inputs(
     """Assemble a ReportInputs from a completed Job.
 
     Pulls ExtractedMetrics from tool_extract_colabfold, StructureFeatures from
-    analyze_structure, and SequenceFeatures from analyze_sequence — all of which
-    are stored in job.results by _run_post_plan_analysis after the plan succeeds.
-    For binding tasks (data_aa_sequence is a list), uses the peptide (index 1) as
-    the primary sequence; for monomer tasks uses index 0.
+    tool_freesasa, and SequenceFeatures from tool_analyze_sequence — all stored in
+    job.results by the registry-driven analysis steps in the plan (B5). For binding
+    jobs the sequence analyzer ran on the peptide (data_peptide_sequence); for
+    monomers on the single target.
     """
     from tools.report import ReportInputs
 
@@ -331,14 +352,8 @@ def build_report_inputs(
     if not isinstance(metrics, list):
         metrics = [metrics]
 
-    structure = job.results.get("analyze_structure")
-
-    sequences = job.results.get("analyze_sequence")
-    sequence = None
-    if isinstance(sequences, list) and sequences:
-        sequence = sequences[1] if len(sequences) > 1 else sequences[0]
-    elif sequences is not None:
-        sequence = sequences
+    structure = job.results.get("tool_freesasa")
+    sequence = job.results.get("tool_analyze_sequence")
 
     output_paths: dict[str, Path] = {}
     pdb = job.inputs.get("data_pdb_complex") or job.inputs.get("data_pdb_file")
@@ -346,6 +361,14 @@ def build_report_inputs(
         output_paths["rank-1 PDB"] = Path(pdb)
     if job.job_dir is not None:
         output_paths["job directory"] = job.job_dir
+
+    disorder_iupred3 = job.results.get("tool_iupred3")
+    metapredict_result = job.results.get("tool_metapredict")
+    disorder_metapredict = (
+        metapredict_result.disorder_scores if metapredict_result is not None else None
+    )
+    cider = job.results.get("tool_localcider")
+    hotspots = job.results.get("tool_rosetta_confidence_filter")
 
     return ReportInputs(
         job_id=job.job_id,
@@ -358,7 +381,176 @@ def build_report_inputs(
         weights=weights,
         structure=structure,
         sequence=sequence,
+        disorder_iupred3=disorder_iupred3,
+        disorder_metapredict=disorder_metapredict,
+        cider=cider,
+        hotspots=hotspots,
     )
+
+
+def build_panel_report_inputs(
+    target_jobs: list[Job],
+    target_id: str,
+    task_description: str,
+    *,
+    methods: dict[str, Any] | None = None,
+    flags: list[str] | None = None,
+    follow_up: list[str] | None = None,
+    weights: dict[str, float] | None = None,
+) -> "PanelReportInputs":
+    """Aggregate a target's per-peptide Jobs into one ranked panel report input.
+
+    For each done job, picks the best model (max composite_score) from
+    job.results["tool_extract_colabfold"] and pulls its structure/sequence analysis
+    from job.results["tool_freesasa"] / ["tool_analyze_sequence"] (the registry-driven
+    analysis steps; the sequence analyzer ran on the peptide). Jobs with no extracted
+    metrics are skipped (logged upstream as failures).
+    """
+    from tools.extract import composite_score
+    from tools.report import PanelEntry, PanelReportInputs
+
+    score_kw: dict = {"weights": weights} if weights else {}
+    entries: list[PanelEntry] = []
+    for job in target_jobs:
+        metrics = job.results.get("tool_extract_colabfold") or []
+        if not isinstance(metrics, list):
+            metrics = [metrics]
+        if not metrics:
+            continue
+        best = max(metrics, key=lambda m: composite_score(m, **score_kw))
+
+        metapredict_result = job.results.get("tool_metapredict")
+        entries.append(PanelEntry(
+            peptide_id=job.metadata.get("peptide_id", job.job_id),
+            metrics=best,
+            structure=job.results.get("tool_freesasa"),
+            sequence=job.results.get("tool_analyze_sequence"),
+            label=job.metadata.get("peptide_id", job.job_id),
+            job_dir=job.job_dir,
+            disorder_iupred3=job.results.get("tool_iupred3"),
+            disorder_metapredict=(
+                metapredict_result.disorder_scores if metapredict_result is not None else None
+            ),
+            cider=job.results.get("tool_localcider"),
+            hotspots=job.results.get("tool_rosetta_confidence_filter"),
+        ))
+
+    # Post-process: if any entry is a scrambled control, compute z-scores for test peptides.
+    # Control IDs follow {parent_id}__scram{k}; detection uses a string prefix check to
+    # avoid importing controls.py on every panel run that doesn't use controls.
+    if any("__scram" in e.peptide_id for e in entries):
+        from dataclasses import replace
+        import math
+        from tools.controls import is_control_id, parent_id_of
+
+        ctrl_scores: dict[str, list[float]] = {}
+        for e in entries:
+            parent = parent_id_of(e.peptide_id)
+            if parent is not None:
+                ctrl_scores.setdefault(parent, []).append(
+                    composite_score(e.metrics, **score_kw)
+                )
+
+        enriched: list = []
+        for e in entries:
+            if is_control_id(e.peptide_id):
+                enriched.append(replace(e, is_control=True))
+                continue
+            ctrls = ctrl_scores.get(e.peptide_id, [])
+            if not ctrls:
+                enriched.append(e)
+                continue
+            null_mean = sum(ctrls) / len(ctrls)
+            null_sd = (
+                math.sqrt(sum((x - null_mean) ** 2 for x in ctrls) / len(ctrls))
+                if len(ctrls) > 1
+                else None
+            )
+            cs = composite_score(e.metrics, **score_kw)
+            z = (cs - null_mean) / null_sd if null_sd and null_sd > 0 else None
+            enriched.append(replace(e, null_mean=null_mean, null_sd=null_sd, z_score=z))
+        entries = enriched
+
+    # Compute contact fingerprints and assign epitope cluster labels.
+    # Skips controls and entries without structure analysis; establishes a
+    # shared universe_size (max observed target-chain residue number) before
+    # building vectors so all fingerprints in the panel are comparable.
+    fp_candidates = [e for e in entries if not e.is_control and e.structure is not None]
+    if fp_candidates:
+        all_target_residues = [
+            r[1]
+            for e in fp_candidates
+            for r in e.structure.interface_residues
+            if r[0] == "A"
+        ]
+        universe_size = max(all_target_residues) if all_target_residues else 0
+        if universe_size > 0:
+            from dataclasses import replace as _dc_replace
+            from tools.fingerprint import cluster_fingerprints, make_fingerprint
+
+            fps = [
+                fp for e in fp_candidates
+                if (fp := make_fingerprint(e.peptide_id, e.structure, universe_size=universe_size))
+                is not None
+            ]
+            if fps:
+                cluster_map = cluster_fingerprints(fps)
+                entries = [
+                    _dc_replace(e, epitope_cluster=cluster_map[e.peptide_id])
+                    if e.peptide_id in cluster_map else e
+                    for e in entries
+                ]
+
+    return PanelReportInputs(
+        target_id=target_id,
+        task_description=task_description,
+        complexes=entries,
+        methods=methods or {},
+        flags=flags or [],
+        follow_up=follow_up or [],
+        weights=weights,
+    )
+
+
+def emit_reports(
+    batch_result: BatchResult,
+    *,
+    outputs_root: Path,
+    task_description: str,
+    methods: dict[str, Any] | None = None,
+    weights: dict[str, float] | None = None,
+) -> list[Path]:
+    """Write user-facing reports for a completed run under outputs_root/.
+
+    Binding / binding_panel jobs are grouped by target into one aggregated panel
+    report (outputs_root/{target_id}/panel_report.md). Monomer jobs get a per-job
+    report (outputs_root/{job_id}/report.md). Returns the paths written.
+    """
+    from collections import defaultdict
+    from tools.report import write_panel_report, write_report
+
+    done = [j for j in batch_result.jobs if j.status == "done"]
+    by_target: dict[str, list[Job]] = defaultdict(list)
+    for job in done:
+        by_target[job.metadata.get("target_id", job.job_id)].append(job)
+
+    written: list[Path] = []
+    for target_id, tjobs in sorted(by_target.items()):
+        kinds = {j.metadata.get("kind") for j in tjobs}
+        if kinds & {"binding", "binding_panel"}:
+            panel_inputs = build_panel_report_inputs(
+                tjobs, target_id, task_description, methods=methods, weights=weights
+            )
+            if panel_inputs.complexes:
+                out = outputs_root / target_id / "panel_report.md"
+                written.append(write_panel_report(panel_inputs, out))
+        else:  # monomer / other single-structure tasks
+            for job in tjobs:
+                ri = build_report_inputs(job, task_description, methods=methods, weights=weights)
+                if ri.metrics:
+                    out = outputs_root / job.job_id / "report.md"
+                    written.append(write_report(ri, out))
+    return written
 
 
 # ---------------------------------------------------------------------------
@@ -459,16 +651,15 @@ def main() -> None:
                    help="Free-text objective shown in the report.")
     p.add_argument("--jobs-root", type=Path, default=Path("jobs"),
                    help="Parent directory for per-job working dirs.")
+    p.add_argument("--outputs-root", type=Path, default=Path("outputs"),
+                   help="Directory for user-facing reports (panel/per-job). "
+                        "Pass '' to skip report emission.")
     p.add_argument("--abort-on-failure", action="store_true",
                    help="Stop the batch on the first failure instead of continuing.")
     args = p.parse_args()
 
     spec = TaskSpec(targets=args.targets, peptides=args.peptides, objective=args.objective)
-    avg_len = sum(len(s) for s in spec.targets + spec.peptides) // max(1, len(spec.targets) + len(spec.peptides))
-    feas = FeasibilityReport(
-        estimated_runtime_s=estimate_runtime(len(spec.targets), len(spec.peptides), avg_len),
-        gpu_required=True,
-    )
+    feas = FeasibilityReport(gpu_required=True)
     roadmap = build_roadmap(spec, feas)
 
     print("[batch] roadmap steps:")
@@ -479,8 +670,10 @@ def main() -> None:
         for d in roadmap.decision_points:
             print(f"  ? {d}")
 
+    outputs_root = args.outputs_root if str(args.outputs_root) else None
     result = run_batch(spec, roadmap, jobs_root=args.jobs_root,
-                       abort_on_failure=args.abort_on_failure)
+                       abort_on_failure=args.abort_on_failure,
+                       outputs_root=outputs_root)
     print(f"[batch] result: done={result.n_done} failed={result.n_failed} skipped={result.n_skipped}")
 
 

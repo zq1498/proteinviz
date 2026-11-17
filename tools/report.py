@@ -5,9 +5,10 @@ the report format specified in CLAUDE.md:
   1. Executive summary
   2. Methods
   3. Per-complex results table
-  4. Flagged observations
-  5. Suggested follow-up
-  6. Raw output locations
+  4. Structural analysis
+  5. Flagged observations
+  6. Suggested follow-up
+  7. Raw output locations
 """
 
 from __future__ import annotations
@@ -16,8 +17,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tools.analyze import SequenceFeatures, StructureFeatures
+from tools.analyze import CIDERFeatures, SequenceFeatures, StructureFeatures
 from tools.extract import DEFAULT_SCORE_WEIGHTS, ExtractedMetrics, composite_score
+from tools.rosetta import ConfidentHotSpot
 
 
 @dataclass
@@ -30,9 +32,65 @@ class ReportInputs:
     follow_up: list[str] = field(default_factory=list)
     output_paths: dict[str, Path] = field(default_factory=dict)
     weights: dict[str, float] | None = None
-    structure: StructureFeatures | None = None   # from analyze_structure()
-    sequence: SequenceFeatures | None = None     # from analyze_sequence()
-    disorder: list[float] | None = None          # from query_aiupred()
+    structure: StructureFeatures | None = None           # from analyze_structure()
+    sequence: SequenceFeatures | None = None             # from analyze_sequence()
+    disorder_iupred3: list[float] | None = None          # from tool_iupred3
+    disorder_metapredict: list[float] | None = None      # from tool_metapredict
+    cider: CIDERFeatures | None = None                   # from tool_localcider
+    hotspots: list[ConfidentHotSpot] | None = None       # from tool_rosetta_confidence_filter
+
+
+def _binding_tier(score: float) -> tuple[str, str]:
+    """Composite-score → (confidence label, caveat) for complex/binding predictions."""
+    if score > 0.70:
+        return ("strong binding candidate", "Proceed with experimental validation.")
+    if score > 0.50:
+        return (
+            "moderate binding candidate",
+            "Interpret with caution; additional metrics or experimental follow-up recommended.",
+        )
+    return (
+        "weak or likely non-binder",
+        "Low confidence across all ranking metrics; treat predictions skeptically.",
+    )
+
+
+def _fold_tier(ptm: float) -> tuple[str, str]:
+    """pTM → (confidence label, caveat) for monomer fold predictions."""
+    if ptm > 0.80:
+        return ("high-confidence fold", "Structure is likely reliable for downstream analysis.")
+    if ptm > 0.50:
+        return (
+            "moderate-confidence fold",
+            "Core structure is probably correct; flexible or disordered regions may be unreliable.",
+        )
+    return (
+        "low-confidence fold",
+        "Significant disorder or structural uncertainty; interpret with care.",
+    )
+
+
+def _actifptm_warning(m: ExtractedMetrics) -> str | None:
+    """Reliability warning when actifpTM is reported for a 3+ chain complex, else None.
+
+    actifpTM aggregates across all inter-chain interfaces, so in a homodimer + peptide
+    setup the well-structured dimer interface inflates it regardless of peptide binding.
+    It is excluded from the composite score for such complexes (see extract.composite_score).
+    """
+    if len(m.per_chain_plddt) < 3 or m.actifptm is None:
+        return None
+    chain_str = _format_chain_plddt(m.per_chain_plddt)
+    min_chain = min(m.per_chain_plddt, key=lambda ch: m.per_chain_plddt[ch])
+    return (
+        f"**actifpTM unreliable in {len(m.per_chain_plddt)}-chain complex.** "
+        f"actifpTM ({m.actifptm:.3f}) aggregates across all inter-chain interfaces. "
+        f"In a homodimer + peptide setup the well-structured dimer interface dominates, "
+        f"inflating this metric regardless of peptide binding quality. "
+        f"actifpTM is excluded from the composite score for this complex. "
+        f"Per-chain pLDDT: {chain_str} — chain {min_chain} "
+        f"({m.per_chain_plddt[min_chain]:.1f}) is the low-confidence chain. "
+        f"Rely on ipTM and peptide-chain pLDDT as primary signals."
+    )
 
 
 def executive_summary(
@@ -54,26 +112,9 @@ def executive_summary(
     is_complex = best.iptm is not None or best.actifptm is not None
 
     if is_complex:
-        if score > 0.70:
-            confidence = "strong binding candidate"
-            caveat = "Proceed with experimental validation."
-        elif score > 0.50:
-            confidence = "moderate binding candidate"
-            caveat = "Interpret with caution; additional metrics or experimental follow-up recommended."
-        else:
-            confidence = "weak or likely non-binder"
-            caveat = "Low confidence across all ranking metrics; treat predictions skeptically."
+        confidence, caveat = _binding_tier(score)
     else:
-        ptm = best.ranking_score or 0.0
-        if ptm > 0.80:
-            confidence = "high-confidence fold"
-            caveat = "Structure is likely reliable for downstream analysis."
-        elif ptm > 0.50:
-            confidence = "moderate-confidence fold"
-            caveat = "Core structure is probably correct; flexible or disordered regions may be unreliable."
-        else:
-            confidence = "low-confidence fold"
-            caveat = "Significant disorder or structural uncertainty; interpret with care."
+        confidence, caveat = _fold_tier(best.ranking_score or 0.0)
 
     ptm_str = f"pTM {best.ranking_score:.3f}" if best.ranking_score is not None else "pTM N/A"
     iptm_str = f", ipTM {best.iptm:.3f}" if best.iptm is not None else ""
@@ -124,19 +165,91 @@ def _render_structural_section(inp: ReportInputs) -> list[str]:
     if inp.sequence and inp.sequence.flags:
         lines += ["", f"**Sequence flags:** {'; '.join(inp.sequence.flags)}"]
 
-    if inp.disorder is not None:
-        mean_d = sum(inp.disorder) / len(inp.disorder)
-        high_frac = sum(1 for d in inp.disorder if d > 0.5) / len(inp.disorder)
-        lines += [
-            "",
-            f"- Mean disorder score: {mean_d:.2f} "
-            f"({high_frac * 100:.0f}% of residues above 0.5 threshold)",
-        ]
+    if inp.disorder_iupred3 is not None:
+        lines += _render_disorder_block("iupred3", inp.disorder_iupred3)
 
-    if not inp.structure and not inp.sequence and inp.disorder is None:
+    if inp.disorder_metapredict is not None:
+        lines += _render_disorder_block("metapredict", inp.disorder_metapredict)
+
+    if inp.cider is not None:
+        lines += _render_cider_block(inp.cider)
+
+    if inp.hotspots is not None:
+        lines += _render_hotspot_block(inp.hotspots)
+
+    has_any = (
+        inp.structure or inp.sequence
+        or inp.disorder_iupred3 is not None
+        or inp.disorder_metapredict is not None
+        or inp.cider is not None
+        or inp.hotspots is not None
+    )
+    if not has_any:
         lines.append("_No structural analysis data available._")
 
     lines.append("")
+    return lines
+
+
+_PHASE_REGION_LABELS = {
+    1: "strongly disordered (low charge, low hydropathy)",
+    2: "weak polyampholyte / boundary IDR",
+    3: "strong polyampholyte",
+    4: "strong polyelectrolyte",
+    5: "globular / folded-like",
+}
+
+_HOTSPOT_TOP_N = 5
+
+
+def _render_disorder_block(source: str, scores: list[float]) -> list[str]:
+    """Render one disorder predictor's scores as a labeled bullet + interpretation."""
+    mean_d = sum(scores) / len(scores)
+    high_frac = sum(1 for d in scores if d > 0.5) / len(scores)
+    gloss = (
+        "binder is largely disordered — complex pLDDT on the peptide chain is the primary confidence metric"
+        if mean_d > 0.5
+        else "low mean disorder — sequence is predicted to be ordered in isolation"
+    )
+    return [
+        "",
+        f"- **Disorder ({source}):** mean {mean_d:.2f}, "
+        f"{high_frac * 100:.0f}% of residues > 0.5 — {gloss}",
+    ]
+
+
+def _render_cider_block(c: CIDERFeatures) -> list[str]:
+    """Render key CIDER descriptors with plain-language interpretation."""
+    region_label = _PHASE_REGION_LABELS.get(c.phase_region, f"region {c.phase_region}")
+    kappa_gloss = (
+        "segregated charge blocks (compact disordered ensemble likely)"
+        if c.kappa > 0.3
+        else "well-mixed charges"
+    )
+    return [
+        "",
+        f"- **CIDER:** κ {c.kappa:.3f} ({kappa_gloss}), "
+        f"FCR {c.fcr:.3f}, NCPR {c.ncpr:+.3f}, "
+        f"phase region {c.phase_region} ({region_label})",
+    ]
+
+
+def _render_hotspot_block(hotspots: list[ConfidentHotSpot]) -> list[str]:
+    """Render top N hotspot hits with confidence label."""
+    if not hotspots:
+        return ["", "- **Hot-spot scan:** no interface residues flagged."]
+    n_conf = sum(1 for h in hotspots if h.confident)
+    lines = [
+        "",
+        f"- **Hot-spot scan (alanine scan × pLDDT filter):** "
+        f"{n_conf} confident / {len(hotspots)} total interface residues above ΔΔG threshold. "
+        f"Top {min(_HOTSPOT_TOP_N, len(hotspots))} hits (confident-first, ΔΔG descending):",
+    ]
+    for h in hotspots[:_HOTSPOT_TOP_N]:
+        conf_tag = "confident" if h.confident else f"uncertain pLDDT {h.plddt:.0f}"
+        lines.append(
+            f"  - {h.chain}{h.pdb_resnum} {h.resname}: ΔΔG {h.ddG:+.2f} kcal/mol ({conf_tag})"
+        )
     return lines
 
 
@@ -190,19 +303,9 @@ def render_report(inputs: ReportInputs) -> str:
 
     auto_flags = list(inputs.flags)
     for m in ranked:
-        if len(m.per_chain_plddt) >= 3 and m.actifptm is not None:
-            chain_str = _format_chain_plddt(m.per_chain_plddt)
-            min_chain = min(m.per_chain_plddt, key=lambda ch: m.per_chain_plddt[ch])
-            auto_flags.append(
-                f"**actifpTM unreliable in {len(m.per_chain_plddt)}-chain complex.** "
-                f"actifpTM ({m.actifptm:.3f}) aggregates across all inter-chain interfaces. "
-                f"In a homodimer + peptide setup the well-structured dimer interface dominates, "
-                f"inflating this metric regardless of peptide binding quality. "
-                f"actifpTM is excluded from the composite score for this complex. "
-                f"Per-chain pLDDT: {chain_str} — chain {min_chain} "
-                f"({m.per_chain_plddt[min_chain]:.1f}) is the low-confidence chain. "
-                f"Rely on ipTM and peptide-chain pLDDT as primary signals."
-            )
+        warning = _actifptm_warning(m)
+        if warning is not None:
+            auto_flags.append(warning)
             break
 
     lines += ["## 5. Flagged Observations", ""]
@@ -233,6 +336,249 @@ def render_report(inputs: ReportInputs) -> str:
 def write_report(inputs: ReportInputs, out_path: Path) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_report(inputs))
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# Aggregated panel report — one target, many ranked peptides (one row per complex)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PanelEntry:
+    """One target-peptide complex within a panel: its best (rank-1) model + analysis."""
+    peptide_id: str
+    metrics: ExtractedMetrics                      # best model for this complex
+    structure: StructureFeatures | None = None     # from analyze_structure()
+    sequence: SequenceFeatures | None = None       # from analyze_sequence()
+    label: str | None = None                              # human label (e.g. peptide sequence)
+    job_dir: Path | None = None                           # raw output location
+    is_control: bool = False                              # True for scrambled controls
+    null_mean: float | None = None                        # mean composite of matched scrambles
+    null_sd: float | None = None                          # SD of matched scrambles (None if n=1)
+    z_score: float | None = None                          # (composite - null_mean) / null_sd
+    disorder_iupred3: list[float] | None = None           # from tool_iupred3
+    disorder_metapredict: list[float] | None = None       # from tool_metapredict
+    cider: CIDERFeatures | None = None                    # from tool_localcider
+    hotspots: list[ConfidentHotSpot] | None = None        # from tool_rosetta_confidence_filter
+    epitope_cluster: str | None = None                    # from tools.fingerprint.cluster_fingerprints
+
+
+@dataclass
+class PanelReportInputs:
+    """Inputs for an aggregated panel report ranking all peptides against one target."""
+    target_id: str
+    task_description: str
+    complexes: list[PanelEntry] = field(default_factory=list)
+    methods: dict[str, str] = field(default_factory=dict)
+    flags: list[str] = field(default_factory=list)
+    follow_up: list[str] = field(default_factory=list)
+    output_paths: dict[str, Path] = field(default_factory=dict)
+    weights: dict[str, float] | None = None
+
+
+def _peptide_chain_plddt(m: ExtractedMetrics) -> str:
+    """Best-effort peptide-chain pLDDT: ColabFold assigns the peptide after the
+    target chains, so the last chain id is the peptide. '—' if unknown."""
+    if not m.per_chain_plddt:
+        return "—"
+    last_chain = sorted(m.per_chain_plddt)[-1]
+    return f"{last_chain}:{m.per_chain_plddt[last_chain]:.1f}"
+
+
+def _panel_executive_summary(
+    ranked: list[PanelEntry], target_id: str, weights: dict[str, float] | None
+) -> str:
+    if not ranked:
+        return f"No complexes were predicted for {target_id}."
+    kw: dict = {"weights": weights} if weights else {}
+    scores = [composite_score(e.metrics, **kw) for e in ranked]
+    top, top_score = ranked[0], scores[0]
+    tier, caveat = _binding_tier(top_score)
+    strong = sum(1 for s in scores if s > 0.70)
+    moderate = sum(1 for s in scores if 0.50 < s <= 0.70)
+    return (
+        f"Screened {len(ranked)} peptide(s) against **{target_id}**. Top candidate "
+        f"**{top.label or top.peptide_id}** is a {tier} (composite {top_score:.3f}). "
+        f"{strong} strong / {moderate} moderate candidate(s); composite scores span "
+        f"{min(scores):.3f}–{max(scores):.3f}. {caveat}"
+    )
+
+
+def render_panel_report(inp: PanelReportInputs) -> str:
+    """Render an aggregated panel report: one row per complex, ranked by composite score.
+
+    Matches the CLAUDE.md reporting spec ('ranked binder suggestions, one row per
+    complex'). Use this for binding panels; use render_report for single complexes
+    and monomers.
+    """
+    kw: dict = {"weights": inp.weights} if inp.weights else {}
+    used_weights = inp.weights or DEFAULT_SCORE_WEIGHTS
+    ranked = sorted(
+        [e for e in inp.complexes if not e.is_control],
+        key=lambda e: composite_score(e.metrics, **kw),
+        reverse=True,
+    )
+
+    lines: list[str] = [
+        f"# Panel Report: {inp.target_id}",
+        f"_Generated {_now_iso()} · task: {inp.task_description}_",
+        "",
+        "## 1. Executive Summary",
+        "",
+        _panel_executive_summary(ranked, inp.target_id, inp.weights),
+        f"_Score weights: primary={used_weights['primary']}, "
+        f"mean_plddt={used_weights['mean_plddt']}, "
+        f"interface_plddt={used_weights['interface_plddt']}_",
+        "",
+        "## 2. Methods",
+        "",
+    ]
+    if inp.methods:
+        for k, v in inp.methods.items():
+            lines.append(f"- **{k}:** {v}")
+    else:
+        lines.append("_No methods recorded._")
+    lines.append("")
+
+    has_epitopes = any(e.epitope_cluster is not None for e in ranked)
+    ep_offset = 1 if has_epitopes else 0
+    has_zscore = any(e.z_score is not None for e in ranked)
+    zscore_offset = 1 if has_zscore else 0
+    total_offset = ep_offset + zscore_offset
+
+    if has_epitopes:
+        tbl_header = (
+            "| Rank | Peptide | Epitope | Composite | ipTM | actifpTM |"
+            " Mean pLDDT | Peptide-chain pLDDT | BSA (Å²) | Interface res |"
+        )
+        tbl_sep = (
+            "|------|---------|---------|-----------|------|----------|"
+            "------------|---------------------|----------|---------------|"
+        )
+    else:
+        tbl_header = (
+            "| Rank | Peptide | Composite | ipTM | actifpTM |"
+            " Mean pLDDT | Peptide-chain pLDDT | BSA (Å²) | Interface res |"
+        )
+        tbl_sep = (
+            "|------|---------|-----------|------|----------|"
+            "------------|---------------------|----------|---------------|"
+        )
+
+    lines += ["## 3. Ranked Binders", "", tbl_header, tbl_sep]
+    for i, e in enumerate(ranked, 1):
+        m = e.metrics
+        cs = composite_score(m, **kw)
+        iptm = f"{m.iptm:.3f}" if m.iptm is not None else "—"
+        actifptm = f"{m.actifptm:.3f}" if m.actifptm is not None else "—"
+        bsa = (
+            f"{e.structure.buried_surface_area:.0f}"
+            if e.structure and e.structure.buried_surface_area is not None
+            else "—"
+        )
+        n_iface = str(len(e.structure.interface_residues)) if e.structure else "—"
+        epitope_col = f" {e.epitope_cluster or '—'} |" if has_epitopes else ""
+        lines.append(
+            f"| {i} | {e.label or e.peptide_id} |{epitope_col} {cs:.3f} | {iptm} | {actifptm} |"
+            f" {m.mean_plddt:.1f} | {_peptide_chain_plddt(m)} | {bsa} | {n_iface} |"
+        )
+    lines.append("")
+
+    if has_epitopes:
+        from collections import defaultdict
+        lines += ["## 4. Epitope Families", ""]
+        clusters: dict[str, list[str]] = defaultdict(list)
+        for e in ranked:
+            clusters[e.epitope_cluster or "Unassigned"].append(e.label or e.peptide_id)
+        for cluster_id, members in sorted(clusters.items()):
+            lines.append(f"- **{cluster_id}** ({len(members)} peptide(s)): {', '.join(members)}")
+        lines += [
+            "",
+            "_Clusters: single-linkage hierarchical clustering on binary target-contact "
+            "fingerprints (Jaccard distance threshold 0.3). Same cluster = overlapping "
+            "epitopes; different clusters = distinct binding sites._",
+            "",
+        ]
+
+    if has_zscore:
+        lines += [f"## {4 + ep_offset}. Selectivity vs Scrambled Controls", ""]
+        lines += [
+            "| Peptide | Composite | Null Mean | Null SD | Z-score |",
+            "|---------|-----------|-----------|---------|---------|",
+        ]
+        for e in ranked:
+            cs = composite_score(e.metrics, **kw)
+            null_mean = f"{e.null_mean:.3f}" if e.null_mean is not None else "—"
+            null_sd = f"{e.null_sd:.3f}" if e.null_sd is not None else "n/a"
+            z = f"{e.z_score:+.2f}" if e.z_score is not None else "—"
+            lines.append(f"| {e.label or e.peptide_id} | {cs:.3f} | {null_mean} | {null_sd} | {z} |")
+        lines.append("")
+
+    lines += [f"## {4 + total_offset}. Per-Complex Notes", ""]
+    notes_written = False
+    for e in ranked:
+        bits: list[str] = []
+        if e.structure and e.structure.disulfide_pairs:
+            pairs = ", ".join(f"{c1}{r1}–{c2}{r2}" for c1, r1, c2, r2 in e.structure.disulfide_pairs)
+            bits.append(f"disulfides {pairs}")
+        if e.sequence and e.sequence.flags:
+            bits.append("; ".join(e.sequence.flags))
+        for source, scores in [("iupred3", e.disorder_iupred3), ("metapredict", e.disorder_metapredict)]:
+            if scores is not None:
+                mean_d = sum(scores) / len(scores)
+                pct = sum(1 for d in scores if d > 0.5) / len(scores) * 100
+                gloss = "largely disordered — trust peptide-chain pLDDT" if mean_d > 0.5 else "ordered"
+                bits.append(f"disorder({source}) {pct:.0f}% > 0.5 ({gloss})")
+        if e.cider is not None:
+            c = e.cider
+            region_label = _PHASE_REGION_LABELS.get(c.phase_region, f"region {c.phase_region}")
+            bits.append(f"κ {c.kappa:.2f}, FCR {c.fcr:.2f}, NCPR {c.ncpr:+.2f}, {region_label}")
+        if e.hotspots is not None and e.hotspots:
+            n_conf = sum(1 for h in e.hotspots if h.confident)
+            top = e.hotspots[0]
+            bits.append(
+                f"hotspots: {n_conf} confident, top hit {top.chain}{top.pdb_resnum} "
+                f"{top.resname} ΔΔG {top.ddG:+.2f}"
+            )
+        if bits:
+            lines.append(f"- **{e.label or e.peptide_id}:** {' · '.join(bits)}")
+            notes_written = True
+    if not notes_written:
+        lines.append("_No per-complex structural flags._")
+    lines.append("")
+
+    auto_flags = list(inp.flags)
+    for e in ranked:
+        warning = _actifptm_warning(e.metrics)
+        if warning is not None:
+            auto_flags.append(warning + " This applies to every 3+ chain complex in this panel.")
+            break
+    lines += [f"## {5 + total_offset}. Flagged Observations", ""]
+    lines += [f"- {f}" for f in auto_flags] if auto_flags else ["_No flags raised._"]
+    lines.append("")
+
+    lines += [f"## {6 + total_offset}. Suggested Follow-Up", ""]
+    lines += [f"- {item}" for item in inp.follow_up] if inp.follow_up else ["_None recorded._"]
+    lines.append("")
+
+    lines += [f"## {7 + total_offset}. Raw Output Locations", ""]
+    paths = dict(inp.output_paths)
+    for e in ranked:
+        if e.job_dir is not None:
+            paths[e.label or e.peptide_id] = e.job_dir
+    if paths:
+        for label, path in paths.items():
+            lines.append(f"- **{label}:** `{path}`")
+    else:
+        lines.append("_No output paths recorded._")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def write_panel_report(inp: PanelReportInputs, out_path: Path) -> Path:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(render_panel_report(inp))
     return out_path
 
 

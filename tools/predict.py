@@ -267,6 +267,9 @@ def predict_panel(
     num_recycle: int | None = None,
     num_models: int | None = None,
     calc_extra_ptm: bool | None = None,
+    with_controls: bool = False,
+    controls_per_peptide: int = 1,
+    controls_seed: int = 0,
 ) -> PanelResult:
     """Submit a target MSA search then a parallel prediction array for a peptide panel.
 
@@ -315,6 +318,7 @@ def predict_panel(
     remote_msa_dir     = f"{remote_primary_out}/msas"
     remote_manifest    = f"{remote_panel_dir}/manifest.tsv"
     remote_build_py    = f"{remote_panel_dir}/build_a3m.py"
+    remote_a3m_py      = f"{remote_panel_dir}/_a3m.py"
     remote_array_sh    = f"{remote_panel_dir}/array_predict.sh"
     remote_jobs_dir    = f"{remote_panel_dir}/jobs"
 
@@ -329,16 +333,34 @@ def predict_panel(
     _scp_to(primary_fasta, remote_fasta)
     print(f"[panel] {primary_fasta.name} → {_dcc_host()}:{remote_fasta}", flush=True)
 
-    # Write manifest locally, upload to DCC
+    # Inject composition-matched scrambled controls if requested
+    ctrl_ids: set[str] = set()
+    if with_controls:
+        from tools.controls import make_scrambled_controls
+        controls = make_scrambled_controls(peptides, controls_per_peptide, controls_seed)
+        ctrl_ids = {pid for pid, _ in controls}
+        peptides = list(peptides) + controls
+        print(
+            f"[panel] with_controls=True: {len(controls)} scrambled control(s) appended "
+            f"({controls_per_peptide} per peptide, seed={controls_seed})",
+            flush=True,
+        )
+
+    # Write manifest locally, upload to DCC (3 columns: peptide_id, seq, is_control)
     manifest_local = jobs_root / f"{job_name}_manifest.tsv"
     manifest_local.write_text(
-        "\n".join(f"{pid}\t{pseq}" for pid, pseq in peptides) + "\n"
+        "\n".join(
+            f"{pid}\t{pseq}\t{'1' if pid in ctrl_ids else '0'}"
+            for pid, pseq in peptides
+        ) + "\n"
     )
     _scp_to(manifest_local, remote_manifest)
     print(f"[panel] manifest ({len(peptides)} peptides) → {_dcc_host()}:{remote_manifest}", flush=True)
 
     # Upload cluster scripts
     cluster_dir = Path(__file__).parent.parent / "cluster"
+    tools_dir = Path(__file__).parent
+    _scp_to(tools_dir / "_a3m.py", remote_a3m_py)
     _scp_to(cluster_dir / "build_a3m.py", remote_build_py)
     _scp_to(cluster_dir / "array_predict.sh", remote_array_sh)
     _ssh(f"chmod +x {remote_array_sh}")

@@ -8,6 +8,7 @@
 - id: tool_colabfold
   label: ColabFold
   tier: 1
+  priority: 10   # preferred prediction backend; wins select_tool over a future tool_boltz1
   definition: AlphaFold2-based structure prediction (monomer and multimer) via SLURM job on DCC.
   subtask:
     - subtask_folding
@@ -25,8 +26,18 @@
     - data_ptm_score
     - data_iptm_score
     - data_actifptm_score
+    - data_a3m_msa
   wrapper: tools.predict.predict_structure
   invocation: cli_subprocess
+  call_kwargs:            # static defaults; a branch overrides calc_extra_ptm per-step
+    fast: false
+  bindings:               # wrapper kwarg -> data_* id OR reserved token
+    fasta: data_fasta_file
+    out_dir: _job_dir
+  output_map:             # data_* id -> attribute expression on the wrapper's return value
+    data_pdb_complex: pdb_paths[0]
+    data_pdb_file: pdb_paths[0]
+    data_a3m_msa: a3m_paths
 
 - id: tool_predict_panel
   label: ColabFold panel (MSA-cached)
@@ -104,6 +115,10 @@
     - data_pae_matrix
   wrapper: tools.extract.extract_colabfold
   invocation: python_api
+  bindings:               # single-pair default; _panel_branch overrides out_dir -> data_colabfold_out_dir
+    out_dir: _job_dir
+  # No output_map: results are read from job.results["tool_extract_colabfold"] by the
+  # report adapter, not chained into a downstream step's bindings.
 
 # ---- Disorder prediction ----
 
@@ -120,6 +135,9 @@
     - data_disorder_summary
   wrapper: tools.analyze.query_aiupred
   invocation: local_python
+  bindings:               # NOTE: query_aiupred takes one sequence; binding/panel jobs pack
+    seq: data_aa_sequence  # data_aa_sequence as a list — B5 wiring resolves which sequence to pass.
+  # Terminal: per-residue disorder is read from job.results["tool_iupred3"] by the report.
 
 - id: tool_metapredict
   label: metapredict V3
@@ -134,8 +152,30 @@
     - data_disorder_summary
   wrapper: tools.metapredict.predict_disorder
   invocation: python_api # subprocess bridge to proteinviz_metapredict conda env
+  bindings:
+    seq: data_aa_sequence
+  # Terminal: MetapredictResult is read from job.results["tool_metapredict"] by the report.
 
 # ---- Sequence biophysics ----
+
+- id: tool_analyze_sequence
+  label: Sequence feature analyzer
+  tier: 1
+  definition: >
+    Biophysical sequence descriptors and heuristic flags (MW, pI, aromatic fraction,
+    cysteine positions; IDR/hydrophobic/PPII/length flags) via Biopython ProteinAnalysis.
+    Always-on analysis step in binding/monomer plans.
+  subtask:
+    - subtask_structural_analysis
+  has_input:
+    - data_aa_sequence
+  has_output:
+    - data_sequence_features
+  wrapper: tools.analyze.analyze_sequence
+  invocation: python_api
+  bindings:               # monomer default; binding/panel branches override seq -> data_peptide_sequence
+    seq: data_aa_sequence
+  # Terminal: SequenceFeatures is read from job.results["tool_analyze_sequence"] by the report.
 
 - id: tool_localcider
   label: localCIDER
@@ -151,6 +191,9 @@
     - data_fcr
   wrapper: tools.analyze.analyze_cider
   invocation: python_api
+  bindings:
+    seq: data_aa_sequence
+  # Terminal: CIDERFeatures is read from job.results["tool_localcider"] by the report.
 
 # ---- Structural analysis ----
 
@@ -170,6 +213,9 @@
     - data_buried_surface_area
   wrapper: tools.analyze.analyze_structure
   invocation: python_api
+  bindings:               # data_pdb_complex is a subtype of data_pdb_file; jobs set both to the rank-1 PDB
+    pdb_path: data_pdb_file
+  # Terminal: StructureFeatures is read from job.results["tool_freesasa"] by the report.
 
 - id: tool_biopython_dssp
   label: Biopython DSSP
@@ -286,6 +332,9 @@
     - data_interface_score
   wrapper: tools.rosetta.score_interface
   invocation: python_api
+  bindings:
+    pdb_path: data_pdb_complex
+  # Terminal: InterfaceScore is read from job.results["tool_rosetta_score_interface"].
 
 - id: tool_rosetta_per_residue_energies
   label: PyRosetta per-residue energies
@@ -302,6 +351,9 @@
     - data_per_residue_energy
   wrapper: tools.rosetta.per_residue_energies
   invocation: python_api
+  bindings:
+    pdb_path: data_pdb_file
+  # Terminal: list[ResidueEnergy] is read from job.results["tool_rosetta_per_residue_energies"].
 
 - id: tool_rosetta_alanine_scan
   label: PyRosetta alanine scan
@@ -321,6 +373,10 @@
     - data_ala_scan_result
   wrapper: tools.rosetta.alanine_scan
   invocation: python_api
+  bindings:
+    pdb_path: data_pdb_complex
+  output_map:             # chained into tool_rosetta_confidence_filter's `scan` binding
+    data_ala_scan_result: "."
 
 - id: tool_rosetta_confidence_filter
   label: PyRosetta pLDDT confidence filter
@@ -339,3 +395,30 @@
     - data_confident_hotspot_list
   wrapper: tools.rosetta.confidence_filter_scan
   invocation: python_api
+  bindings:
+    scan: data_ala_scan_result   # populated by tool_rosetta_alanine_scan's output_map
+    plddt_pdb: data_pdb_file      # B5 refines this to data_pdb_unrelaxed (Amber zeroes B-factors)
+  # Terminal: list[ConfidentHotSpot] is read from job.results["tool_rosetta_confidence_filter"].
+
+# ---- Negative controls ----
+
+- id: tool_scrambled_controls
+  label: Scrambled control peptide generator
+  tier: 1
+  definition: >
+    Generates composition-matched scrambled controls (same AA composition, shuffled
+    order) for each test peptide. Preserves length, charge, hydrophobicity, and disorder
+    propensity — only sequence-specific binding is tested. Used to establish a per-panel
+    null distribution so composite_score can be expressed as a z-score.
+  subtask:
+    - subtask_negative_controls
+  has_input:
+    - data_aa_sequence
+  has_output:
+    - data_aa_sequence
+  wrapper: tools.controls.make_scrambled_controls
+  invocation: python_api
+  notes: >
+    Injected into predict_panel() via with_controls=True. Control IDs follow
+    {peptide_id}__scram{k}. z-scores computed in build_panel_report_inputs();
+    rendered in the "Selectivity vs Scrambled Controls" section of the panel report.

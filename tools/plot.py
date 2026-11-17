@@ -82,7 +82,7 @@ def plot_pae_heatmap(metrics: ExtractedMetrics, out_path: Path) -> Path:
 
 
 def plot_model_comparison(all_metrics: list[ExtractedMetrics], out_path: Path,
-                           comparison_tmscore: float | None = None) -> Path:
+                           tmscore_vs_crystal: float | None = None) -> Path:
     """Bar chart comparing pLDDT and pTM across all ranked models."""
     labels = [f"rank_{i+1}" for i in range(len(all_metrics))]
     plddt_vals = [m.mean_plddt for m in all_metrics]
@@ -107,11 +107,11 @@ def plot_model_comparison(all_metrics: list[ExtractedMetrics], out_path: Path,
 
     lines = [bars1, bars2]
     leg_labels = ["mean pLDDT", "pTM"]
-    if comparison_tmscore is not None:
-        ax2.axhline(comparison_tmscore, color="red", linestyle="--", linewidth=1.2,
-                    label=f"TM-score vs crystal ({comparison_tmscore:.3f})")
-        leg_labels.append(f"TM vs crystal ({comparison_tmscore:.3f})")
-        lines.append(ax2.axhline(comparison_tmscore, color="red", linestyle="--", linewidth=1.2))
+    if tmscore_vs_crystal is not None:
+        ax2.axhline(tmscore_vs_crystal, color="red", linestyle="--", linewidth=1.2,
+                    label=f"TM-score vs crystal ({tmscore_vs_crystal:.3f})")
+        leg_labels.append(f"TM vs crystal ({tmscore_vs_crystal:.3f})")
+        lines.append(ax2.axhline(tmscore_vs_crystal, color="red", linestyle="--", linewidth=1.2))
 
     fig.legend(leg_labels, loc="upper right", bbox_to_anchor=(0.98, 0.92), fontsize=8)
     fig.tight_layout()
@@ -131,7 +131,7 @@ def generate_all(job_dir: Path, out_dir: Path,
     saved.append(plot_plddt_profile(best, out_dir / "plddt_profile.png"))
     saved.append(plot_pae_heatmap(best, out_dir / "pae_heatmap.png"))
     saved.append(plot_model_comparison(all_metrics, out_dir / "model_comparison.png",
-                                        comparison_tmscore=tmscore_vs_crystal))
+                                        tmscore_vs_crystal=tmscore_vs_crystal))
     return saved
 
 

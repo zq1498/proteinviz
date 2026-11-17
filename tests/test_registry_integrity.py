@@ -8,6 +8,8 @@ ID. A typo in any cross-reference silently breaks `tools_for_subtask` /
 from __future__ import annotations
 
 import importlib
+import inspect
+import re
 
 import pytest
 
@@ -17,9 +19,19 @@ from preflight.reasoning import (
     _reload_registry,
     all_subtasks,
     all_tools,
+    resolve_wrapper,
     tools_providing,
     tools_requiring,
 )
+
+# Reserved binding tokens the orchestrator resolves itself (see preflight/jobs.py).
+_RESERVED_BINDING_TOKENS = {"_job_dir", "_msa_cache"}
+
+# Output-map expressions support exactly three forms (see _resolve_output_expr in tools/batch.py):
+#   "."            whole result
+#   attr           a single attribute
+#   attr[0]        first element of a list attribute
+_OUTPUT_EXPR_RE = re.compile(r"^(?:\.|[A-Za-z_][A-Za-z0-9_]*(?:\[0\])?)$")
 
 
 @pytest.fixture(autouse=True)
@@ -127,6 +139,68 @@ def test_tools_requiring_round_trip():
             requirers = {t["id"] for t in tools_requiring(input_id)}
             assert tool["id"] in requirers, (
                 f"{tool['id']} declares input {input_id} but tools_requiring missed it"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Declarative call contract (B1): bindings, output_map, call_kwargs
+# ---------------------------------------------------------------------------
+
+def test_bindings_resolve_to_data_id_or_reserved_token():
+    """Every `bindings` value is a known data_* id or a reserved orchestrator token."""
+    reg = _load_registry()
+    data_ids = set(reg["data_types"].keys())
+    for tool in reg["tools"].values():
+        for kwarg, source in tool.get("bindings", {}).items():
+            assert source in data_ids or source in _RESERVED_BINDING_TOKENS, (
+                f"{tool['id']} binds {kwarg!r} to unknown source {source!r}"
+            )
+
+
+def test_output_map_keys_in_has_output_and_well_formed():
+    """Every `output_map` key is one of the tool's outputs; every expression is well-formed."""
+    for tool in all_tools():
+        outputs = set(tool.get("has_output", []))
+        for data_id, expr in tool.get("output_map", {}).items():
+            assert data_id in outputs, (
+                f"{tool['id']} output_map key {data_id!r} not in has_output"
+            )
+            assert _OUTPUT_EXPR_RE.match(expr), (
+                f"{tool['id']} output_map expr {expr!r} for {data_id!r} is malformed"
+            )
+
+
+def test_call_kwargs_accepted_by_wrapper_signature():
+    """Static call_kwargs keys must be real parameters of the wrapped callable."""
+    for tool in all_tools():
+        call_kwargs = tool.get("call_kwargs")
+        if not call_kwargs or tool.get("wrapper") is None:
+            continue
+        fn = resolve_wrapper(tool["id"])
+        params = inspect.signature(fn).parameters
+        accepts_var_kw = any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+        for key in call_kwargs:
+            assert accepts_var_kw or key in params, (
+                f"{tool['id']} call_kwargs {key!r} not accepted by {tool['wrapper']}"
+            )
+
+
+def test_binding_kwargs_accepted_by_wrapper_signature():
+    """Every bound wrapper kwarg must be a real parameter of the wrapped callable."""
+    for tool in all_tools():
+        bindings = tool.get("bindings")
+        if not bindings or tool.get("wrapper") is None:
+            continue
+        fn = resolve_wrapper(tool["id"])
+        params = inspect.signature(fn).parameters
+        accepts_var_kw = any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+        for kwarg in bindings:
+            assert accepts_var_kw or kwarg in params, (
+                f"{tool['id']} binds unknown kwarg {kwarg!r} not in {tool['wrapper']}"
             )
 
 

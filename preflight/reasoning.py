@@ -33,8 +33,8 @@ __all__ = [
     "lookup_tool", "lookup_subtask", "lookup_data_type",
     "all_tools", "all_subtasks",
     "tools_for_subtask", "tools_providing", "tools_requiring",
-    "resolve_wrapper",
-    "estimate_runtime", "validate_inputs", "suggest_analyses", "build_roadmap",
+    "resolve_wrapper", "make_step", "select_tool",
+    "validate_inputs", "suggest_analyses", "build_roadmap",
 ]
 
 
@@ -56,11 +56,16 @@ class TaskSpec:
     peptides: list[str] = field(default_factory=list)
     objective: str = ""
     user_requested_metrics: list[str] = field(default_factory=list)
+    # Opt-in analyses (registry tool ids) the agent confirmed during pre-flight.
+    # build_roadmap appends the matching analysis steps to every job's plan.
+    # Sequence-based: _OPT_IN_SEQ_ANALYSES (iupred3, metapredict, localcider).
+    # Structure-based: "tool_rosetta_confidence_filter" triggers the alanine-scan
+    # → confidence-filter hotspot chain for binding/panel jobs.
+    requested_analyses: list[str] = field(default_factory=list)
 
 
 @dataclass
 class FeasibilityReport:
-    estimated_runtime_s: float
     gpu_required: bool
     warnings: list[str] = field(default_factory=list)
     blockers: list[str] = field(default_factory=list)
@@ -194,6 +199,50 @@ def tools_requiring(data_type_id: str) -> list[dict]:
     return [t for t in all_tools() if data_type_id in t.get("has_input", [])]
 
 
+def select_tool(subtask_id: str, *, require_wrapper: bool = True, max_tier: int = 2) -> dict:
+    """Pick the preferred callable tool for a subtask, explicitly (not positionally).
+
+    Filters out deprecated tools, tools above `max_tier`, and (when
+    `require_wrapper`) tools with no `wrapper`. Ranks the survivors by
+    `(tier, -priority, id)` — lower tier wins, then higher `priority`, then a
+    stable id tiebreak. This replaces the old `tools_for_subtask(...)[0]`, which
+    silently changed backend if `tools.yaml` was reordered.
+
+    Raises RuntimeError if no tool qualifies.
+    """
+    cands = [
+        t for t in tools_for_subtask(subtask_id)
+        if not t.get("deprecated")
+        and (t.get("wrapper") or not require_wrapper)
+        and t.get("tier", 99) <= max_tier
+    ]
+    if not cands:
+        raise RuntimeError(f"No selectable tool for {subtask_id}")
+    return sorted(cands, key=lambda t: (t.get("tier", 99), -t.get("priority", 0), t["id"]))[0]
+
+
+def _unimplemented_tool_notes(subtask_id: str, *, max_tier: int = 2) -> list[str]:
+    """Decision-point notes for tools registered under a subtask but not yet callable.
+
+    Keeps the capability map visible during pre-flight: a tool that is declared
+    (so the agent knows it exists) but has a null wrapper or is above max_tier is
+    surfaced as a note rather than silently ignored or silently routed to.
+    """
+    notes: list[str] = []
+    for t in tools_for_subtask(subtask_id):
+        if t.get("deprecated"):
+            continue
+        no_wrapper = not t.get("wrapper")
+        too_high = t.get("tier", 99) > max_tier
+        if no_wrapper or too_high:
+            reason = "no wrapper" if no_wrapper else f"tier {t.get('tier')}"
+            notes.append(
+                f"{t['label']} ({t['id']}) is registered for {subtask_id} but not yet "
+                f"callable ({reason}) — not routed to."
+            )
+    return notes
+
+
 def _descendant_subtasks(parent_id: str) -> set[str]:
     """All subtask IDs whose `parent` chain includes parent_id."""
     subtasks = _load_registry()["subtasks"]
@@ -213,21 +262,76 @@ def _descendant_subtasks(parent_id: str) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Pre-flight reasoning helpers
+# Registry-driven step builder
 # ---------------------------------------------------------------------------
 
-def estimate_runtime(n_targets: int, n_peptides: int, avg_length: int) -> float:
-    """Rough runtime estimate in seconds for a full pairwise sweep on one GPU.
+def make_step(
+    tool_id: str,
+    *,
+    kwarg_overrides: dict | None = None,
+    binding_overrides: dict | None = None,
+    optional: bool = False,
+) -> JobStep:
+    """Build a JobStep from a tool's registry call contract.
 
-    Calibration TODO — replace constants after first real runs.
-    Might be kind of useless honestly since im usually gremlin running on scavenger gpus so it's
-    different hardware. Most of the runtimes tend to be CPU-bound MSA searches though, so I could be wrong
+    Pulls `call_kwargs`, `bindings`, `has_input` (→ consumes) and `has_output`
+    (→ produces) from the registry entry so a roadmap branch only has to name
+    the tool plus any per-use overrides, instead of hand-writing the wiring.
+
+    kwarg_overrides win over the registry's `call_kwargs`; binding_overrides win
+    over the registry's `bindings` (e.g. the panel path rebinds `out_dir` to
+    `data_colabfold_out_dir`). `optional=True` marks supplemental steps (analysis)
+    so the orchestrator logs-and-continues on failure rather than failing the Job.
     """
-    pairs = max(1, n_targets) * max(1, n_peptides or 1)
-    per_pair_s = 60 + 0.5 * avg_length
-    return 0 # uncalibrated; populate from SLURM sacct wall-clock data
-    # return pairs * per_pair_s
+    entry = lookup_tool(tool_id)
+    return JobStep(
+        tool_id=tool_id,
+        kwargs={**entry.get("call_kwargs", {}), **(kwarg_overrides or {})},
+        input_bindings={**entry.get("bindings", {}), **(binding_overrides or {})},
+        consumes=list(entry.get("has_input", [])),
+        produces=list(entry.get("has_output", [])),
+        optional=optional,
+    )
 
+
+# Always-on analysis steps appended to every binding/monomer plan (supplemental,
+# optional). Routed through the registry so today's behaviour (analyze_structure +
+# analyze_sequence after the plan) is preserved without the hardcoded post-plan hook.
+# For binding/panel jobs the sequence analyzer runs on the peptide (data_peptide_sequence);
+# for monomers it runs on the single target (data_aa_sequence default binding).
+_ALWAYS_ON_STRUCTURE = "tool_freesasa"
+_ALWAYS_ON_SEQUENCE = "tool_analyze_sequence"
+
+# Opt-in, sequence-based analyses the agent can request via TaskSpec.requested_analyses.
+_OPT_IN_SEQ_ANALYSES = frozenset({"tool_iupred3", "tool_metapredict", "tool_localcider"})
+
+# Opt-in structure-based hotspot chain. The agent writes "tool_rosetta_confidence_filter"
+# in requested_analyses; _append_requested_analyses appends both steps in order.
+_HOTSPOT_MARKER = "tool_rosetta_confidence_filter"
+
+# ColabFold chain assignment: single-pair binding = target chain A, peptide chain B.
+# Panel homodimer target = chains A, B + peptide chain C.
+# The peptide is always the last chain (_peptide_chain_plddt in report.py relies on this).
+_INTERFACE_SINGLE_PAIR = "A_B"
+_INTERFACE_PANEL_HOMODIMER = "AB_C"  # correct for current VEGF homodimer panels
+
+
+def _analysis_steps(*, peptide_sequence: bool) -> list[JobStep]:
+    """Always-on structure + sequence analysis steps for one job's plan.
+
+    `peptide_sequence=True` (binding/panel) binds the sequence analyzer to the
+    peptide; False (monomer) uses the default data_aa_sequence binding.
+    """
+    seq_override = {"seq": "data_peptide_sequence"} if peptide_sequence else None
+    return [
+        make_step(_ALWAYS_ON_STRUCTURE, optional=True),
+        make_step(_ALWAYS_ON_SEQUENCE, binding_overrides=seq_override, optional=True),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight reasoning helpers
+# ---------------------------------------------------------------------------
 
 def validate_inputs(spec: TaskSpec) -> list[str]:
     """Return human-readable warnings derived from sequence-level heuristics.
@@ -301,11 +405,20 @@ def build_roadmap(spec: TaskSpec, feasibility: FeasibilityReport) -> Roadmap:
     else:
         steps, jobs = _monomer_branch(spec)
 
+    if spec.requested_analyses:
+        added = _append_requested_analyses(jobs, spec.requested_analyses)
+        if added:
+            steps.append(f"Run opt-in analyses: {', '.join(added)}")
+
     decision_points: list[str] = []
     if any(len(s) > 200 for s in spec.targets):
         decision_points.append(
             "Run disorder check on targets before interpreting low-pLDDT regions?"
         )
+    # Keep the capability map visible: note tools declared for the active subtask
+    # that aren't yet callable, rather than silently ignoring or routing to them.
+    primary_subtask = "subtask_binding" if spec.peptides else "subtask_folding"
+    decision_points.extend(_unimplemented_tool_notes(primary_subtask))
 
     steps.append("Compute composite scores and rank")
     steps.append("Render markdown report with flagged observations")
@@ -318,6 +431,53 @@ def build_roadmap(spec: TaskSpec, feasibility: FeasibilityReport) -> Roadmap:
     )
 
 
+def _append_requested_analyses(jobs: list[Job], requested: list[str]) -> list[str]:
+    """Append opt-in analyses to every job's plan, in-place.
+
+    Handles two opt-in categories:
+    - Sequence-based (_OPT_IN_SEQ_ANALYSES): iupred3, metapredict, localcider.
+      Added for all job kinds; bound to peptide sequence for complex jobs.
+    - Structure-based hotspot chain (_HOTSPOT_MARKER): alanine_scan →
+      confidence_filter. Added only for binding / binding_panel jobs (complexes
+      have an interface; monomers do not). Both steps are optional.
+
+    Unknown or not-yet-supported ids are skipped. Returns the sorted list of
+    tool ids actually added (for the human-readable roadmap).
+    """
+    added: set[str] = set()
+    want_hotspots = _HOTSPOT_MARKER in requested
+
+    for job in jobs:
+        kind = job.metadata.get("kind")
+        is_complex = kind in {"binding", "binding_panel"}
+        seq_override = {"seq": "data_peptide_sequence"} if is_complex else None
+
+        for tool_id in requested:
+            if tool_id not in _OPT_IN_SEQ_ANALYSES:
+                continue
+            job.plan.append(
+                make_step(tool_id, binding_overrides=seq_override, optional=True)
+            )
+            added.add(tool_id)
+
+        if want_hotspots and is_complex:
+            interface = (
+                _INTERFACE_PANEL_HOMODIMER if kind == "binding_panel"
+                else _INTERFACE_SINGLE_PAIR
+            )
+            job.plan.append(
+                make_step(
+                    "tool_rosetta_alanine_scan",
+                    kwarg_overrides={"interface": interface},
+                    optional=True,
+                )
+            )
+            job.plan.append(make_step("tool_rosetta_confidence_filter", optional=True))
+            added.add(_HOTSPOT_MARKER)
+
+    return sorted(added)
+
+
 def _binding_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
     """Route to per-pair or panel path depending on peptide count."""
     if len(spec.peptides) > 1:
@@ -327,14 +487,11 @@ def _binding_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
 
 def _single_pair_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
     """Emit one Job per (target, peptide) pair with a predict + extract plan."""
-    binding_tools = tools_for_subtask("subtask_binding")
-    if not binding_tools:
-        raise RuntimeError("No tools registered for subtask_binding")
-    primary = binding_tools[0]   # tool_colabfold by current registry order
+    primary_id = select_tool("subtask_binding")["id"]   # tier-aware, priority-ranked
 
     n_pairs = len(spec.targets) * len(spec.peptides)
     steps = [
-        f"Predict {n_pairs} target-peptide complex(es) via {primary['id']}",
+        f"Predict {n_pairs} target-peptide complex(es) via {primary_id}",
         "Extract ipTM, actifpTM, pLDDT, PAE per complex",
     ]
 
@@ -347,28 +504,13 @@ def _single_pair_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
                 job_id=f"{target_id}__{peptide_id}__{secrets.token_hex(4)}",
                 inputs={
                     "data_aa_sequence": [target, peptide],
+                    "data_peptide_sequence": peptide,
                     "data_fasta_file": None,
                 },
                 plan=[
-                    JobStep(
-                        tool_id=primary["id"],
-                        kwargs={"fast": False, "calc_extra_ptm": True},
-                        input_bindings={
-                            "fasta": "data_fasta_file",
-                            "out_dir": "_job_dir",
-                        },
-                        consumes=["data_fasta_file"],
-                        produces=primary.get("has_output", []),
-                    ),
-                    JobStep(
-                        tool_id="tool_extract_colabfold",
-                        input_bindings={"out_dir": "_job_dir"},
-                        consumes=["data_pdb_complex"],
-                        produces=[
-                            "data_iptm_score", "data_actifptm_score",
-                            "data_ptm_score", "data_plddt_per_residue", "data_pae_matrix",
-                        ],
-                    ),
+                    make_step(primary_id, kwarg_overrides={"calc_extra_ptm": True}),
+                    make_step("tool_extract_colabfold"),
+                    *_analysis_steps(peptide_sequence=True),
                 ],
                 metadata={
                     "target_id": target_id,
@@ -404,20 +546,17 @@ def _panel_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
                 job_id=f"{target_id}__{peptide_id}__{secrets.token_hex(4)}",
                 inputs={
                     "data_aa_sequence": [target, peptide],
+                    "data_peptide_sequence": peptide,
                     "data_colabfold_out_dir": None,  # filled by run_batch after predict_panel
                     "data_pdb_complex": None,         # filled by run_batch after predict_panel
                     "data_pdb_file": None,            # filled by run_batch after predict_panel
                 },
                 plan=[
-                    JobStep(
-                        tool_id="tool_extract_colabfold",
-                        input_bindings={"out_dir": "data_colabfold_out_dir"},
-                        consumes=["data_pdb_complex"],
-                        produces=[
-                            "data_iptm_score", "data_actifptm_score",
-                            "data_ptm_score", "data_plddt_per_residue", "data_pae_matrix",
-                        ],
+                    make_step(
+                        "tool_extract_colabfold",
+                        binding_overrides={"out_dir": "data_colabfold_out_dir"},
                     ),
+                    *_analysis_steps(peptide_sequence=True),
                 ],
                 metadata={
                     "target_id": target_id,
@@ -432,13 +571,10 @@ def _panel_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
 
 def _monomer_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
     """Emit one Job per target with a predict + extract plan (single chain)."""
-    folding_tools = tools_for_subtask("subtask_folding")
-    if not folding_tools:
-        raise RuntimeError("No tools registered for subtask_folding")
-    primary = folding_tools[0]
+    primary_id = select_tool("subtask_folding")["id"]   # tier-aware, priority-ranked
 
     steps = [
-        f"Predict {len(spec.targets)} monomer structures via {primary['id']}",
+        f"Predict {len(spec.targets)} monomer structures via {primary_id}",
         "Extract per-residue pLDDT and pTM",
     ]
 
@@ -452,22 +588,9 @@ def _monomer_branch(spec: TaskSpec) -> tuple[list[str], list[Job]]:
                 "data_fasta_file": None,
             },
             plan=[
-                JobStep(
-                    tool_id=primary["id"],
-                    kwargs={"fast": False, "calc_extra_ptm": False},
-                    input_bindings={
-                        "fasta": "data_fasta_file",
-                        "out_dir": "_job_dir",
-                    },
-                    consumes=["data_fasta_file"],
-                    produces=primary.get("has_output", []),
-                ),
-                JobStep(
-                    tool_id="tool_extract_colabfold",
-                    input_bindings={"out_dir": "_job_dir"},
-                    consumes=["data_pdb_file"],
-                    produces=["data_ptm_score", "data_plddt_per_residue", "data_pae_matrix"],
-                ),
+                make_step(primary_id, kwarg_overrides={"calc_extra_ptm": False}),
+                make_step("tool_extract_colabfold"),
+                *_analysis_steps(peptide_sequence=False),
             ],
             metadata={"target_id": target_id, "kind": "monomer"},
         ))
