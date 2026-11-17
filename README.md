@@ -140,9 +140,6 @@ Working files stay under `jobs/`; user-facing deliverables go to `outputs/`. Tas
 ## Known limitations
 
 - `composite_score` weights are uncalibrated placeholders. See the scramble-null design in [composite_score_minimum_implementation.md](composite_score_minimum_implementation.md) for the planned fix; only the mean/SD z-score slice is implemented, not robust z-scores, empirical p-values, or multiple-testing correction.
-- **6 of the 20 registered tools are declared but not callable** — Boltz-1, DSSP, Biotite, NetSurfP-3, PDBePISA, and FoldX all carry `wrapper: null` at tier 3. They appear in the registry and in CLAUDE.md's tool inventory, but the pre-flight layer will surface them as decision points rather than running them. PeptiDerive is likewise tier 3 and unimplemented, so residue-level decomposition currently goes through the PyRosetta alanine scan instead.
-- Only single-chain and homo-oligomeric targets are supported. Heterodimeric targets would need two monomer MSAs, a three-chain metadata header, and interleaved paired-MSA rows; out of scope until a concrete use case.
-- Contact fingerprinting does not yet gate interface residues by per-residue pLDDT, so low-confidence contacts count toward epitope clustering. Pass 2 adds the filtering.
-- `done.flag` resume works, but the `job_id` format (`{target_id}_{YYYYMMDD}_{short_hash}`) is only proposed, not enforced in code. Worth locking down before the next real screen.
-- Whether pre-flight conversation state should persist to a file (resumable sessions) or live only in agent context is undecided.
-- ESMFold prediction and extraction are stubs.
+- Only single-chain and homo-oligomeric targets are supported. Heterodimeric targets would need two monomer MSAs, a three-chain metadata header, and interleaved paired-MSA rows; binders against dimeric proteins would require such a strategy, alternatively, all MSAs would have to be recalculated as is standard
+- Contact fingerprinting does not yet gate interface residues by per-residue pLDDT, so low-confidence contacts count toward epitope clustering.
+- `done.flag` resume works, but the `job_id` format (`{target_id}_{YYYYMMDD}_{short_hash}`) is only proposed, not enforced in code.
