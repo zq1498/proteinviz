@@ -38,7 +38,7 @@ Screens and folds completed on DCC:
 
 Separately, two known complexes serve as validation benchmarks rather than screens — calmodulin + MLCK peptide (2BBM) and the MDM2 binding domain + p53 peptide (1YCR). The `validate_msa_caching` job folds each one both ways, fresh search vs. cached target A3M, and backs `tests/validate_msa_caching.py`; `1ycr_mdm2_actifptm_test` confirmed actifpTM extraction and the ColabFold 1.6.0 score-JSON keys.
 
-The most recent attempt did **not** succeed: `ncam1_pilot`, a 104-fold NCAM1 Ig15 panel, failed at submission — the FASTA and manifest reached DCC, but `sbatch` for the primary MSA search returned exit 1 and the array never queued. It is undiagnosed; see `jobs/ncam1_pilot/submit.log`. So treat the panel path as exercised on VEGF165 and not yet re-confirmed on a new target.
+The panel path has been exercised on VEGF165 and on the two benchmarks above; it has not yet been run end-to-end against a new target.
 
 That ~8 h MSA wait on the first run is the single most useful number here: the CPU-bound MMseqs2 search, not the GPU fold, is usually what you are waiting on. Panel runs exist to amortize it — one primary search per target, reused across every peptide in the array.
 
