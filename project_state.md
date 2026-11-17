@@ -399,7 +399,10 @@ deleted along with the function itself (2026-09-02) rather than left around as d
 | `vegf_monomer` | VEGF165 monomer | Complete | Monomer fold, A3M captured for panel reuse |
 | `vegf165_dimer` | VEGF165 homodimer | Complete | Dimer prediction; validated panel pipeline input |
 | `vegf165_dimer_pep00` | VEGF165 dimer + peptide 0 | Complete | First panel array task tested end-to-end |
-| `vegf_selectivity_screen` | VEGF selectivity panel | Complete | Report generated (`tests/vegf_selectivity_report.md`) |
+| `vegf_selectivity_screen` | VEGF selectivity panel | Complete | Report generated (`outputs/vegf_selectivity_report.md`) |
+| `validate_msa_caching` | Calmodulin + MLCK (2BBM) and MDM2 + p53 (1YCR), fresh vs. cached | Complete | Validation benchmark, not a screen. 6 runs x 5 ranked models; confirms a cached target A3M reproduces a fresh `colabfold_search`. Backs `tests/validate_msa_caching.py` |
+| `1ycr_mdm2_actifptm_test` | MDM2 binding domain + p53 peptide (1YCR) | Complete | Validation benchmark. actifpTM extraction verified (2026-05-12); confirmed ColabFold 1.6.0 score-JSON keys |
+| `ncam1_pilot` | NCAM1 Ig15 peptide panel (104 folds) | **Failed at submission** | FASTA + manifest uploaded to DCC, but `sbatch` for the primary `SEARCH_ONLY` search returned exit 1 and the array never queued. See `jobs/ncam1_pilot/submit.log`. Not yet diagnosed |
 
 ## What Is Still Stubbed / Incomplete
 
