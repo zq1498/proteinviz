@@ -342,9 +342,9 @@ CLI: `python3 build_a3m.py <target_a3m> <peptide_seq> <peptide_id> <out_dir> [<c
 
 SLURM array job template for parallel panel predictions. Submitted by `predict_panel()` with `--dependency=afterok:{primary_id} --array=0-{N-1}`. Each task reads its peptide from the manifest TSV using `$SLURM_ARRAY_TASK_ID`, calls `build_a3m.py` to construct the paired A3M on the DCC node (no local→DCC round-trip per peptide), then runs the `colabfold_batch` stage with the same Singularity + numpy workaround as `predict.sh`. Per-task logs at `/work/zq36/colabfold/logs/array_{array_job_id}_{task_id}.log`. Per-peptide outputs land at `JOBS_DIR/{peptide_id}/output/`. Required exports: `PRIMARY_MSA_DIR`, `MANIFEST`, `JOBS_DIR`, `BUILD_A3M_SCRIPT`. Optional: `N_TARGET_COPIES` (default 1 — set to 2 for homodimer targets), `NUM_RECYCLE`, `NUM_MODELS`, `CALC_EXTRA_PTM`.
 
-### [cluster/install_localcolabfold.sh](cluster/install_localcolabfold.sh)
+### cluster/install_localcolabfold.sh
 
-One-time setup script to run on DCC login node. Installs pixi to `/work/zq36/.pixi` and LocalColabFold to `/work/zq36/localcolabfold`. No sudo required — pixi and bundled CUDA runtime are fully user-space; cluster GPU nodes supply the driver.
+**Deleted** (in `94e30d3`) — the one-time DCC setup script is no longer vendored here. The install scripts are maintained on DCC under `$DCC_WORK/colabfold/install_scripts/` (see `DCC_PREDICT_SCRIPT` in `.env.example`, which points at `04_run_prediction.sh` there). It installed pixi to `/work/zq36/.pixi` and LocalColabFold to `/work/zq36/localcolabfold`; no sudo required, since pixi and the bundled CUDA runtime are fully user-space and the cluster GPU nodes supply the driver.
 
 ### [tools/plot.py](tools/plot.py)
 
@@ -455,7 +455,7 @@ Conventions: stable IDs, forward relations only, polyhierarchy permitted. See [p
 | `cluster/build_a3m.py` | Thin CLI wrapper — imports `build_paired_a3m` from co-uploaded `_a3m.py`; `build()` adapter reorders args to match `array_predict.sh` invocation |
 | `cluster/array_predict.sh` | Implemented (SLURM array template; `N_TARGET_COPIES` export for homo-oligomeric targets) |
 | `cluster/msa_search.sh` | **Deleted** — MSA search folded into `cluster/predict.sh` |
-| `cluster/install_localcolabfold.sh` | Implemented (one-time DCC setup) |
+| `cluster/install_localcolabfold.sh` | **Deleted** — one-time DCC setup now lives on the cluster under `$DCC_WORK/colabfold/install_scripts/`, not in this repo |
 | `tools/plot.py` | Implemented (pLDDT profile, PAE heatmap, model comparison bar chart) |
 | `tools/analyze.py` | `analyze_sequence` expanded (11 new scalar metrics + 5 new flags); `screen_sequences` + `DEFAULT_SCREEN_THRESHOLDS` implemented (batch screening with 3-figure diagnostic output); `analyze_structure`, `detect_disulfides`, `query_aiupred` implemented; `analyze_cider` + `CIDERFeatures` implemented (localCIDER global descriptors); `query_iupred3` is a legacy alias |
 | `tools/metapredict.py` | `predict_disorder` implemented and validated; `MetapredictResult` dataclass; stdout prefix stripping; 60s timeout + `CUDA_VISIBLE_DEVICES=""` |
